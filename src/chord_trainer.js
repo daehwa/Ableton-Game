@@ -244,47 +244,63 @@ const TWO_PI = 2 * Math.PI;
 let soundingNotes = new Set();  // MIDI notes currently playing
 let notePhases = {};            // MIDI note -> phase accumulator [0, TWO_PI)
 
+function passthrough(frame) {
+    // Read USB audio input from Ableton and pass to output
+    const inL = get_int16(2048 + 256 + frame * 4 + 0);
+    const inR = get_int16(2048 + 256 + frame * 4 + 2);
+    return { l: inL, r: inR };
+}
+
 function playAudioTick() {
     const notes = [...soundingNotes];
     const numNotes = notes.length;
 
-    // Pre-compute frequency step for each note ONCE (not per-frame)
-    const steps = new Array(numNotes);
-    for (let i = 0; i < numNotes; i++) {
-        const freq = 440 * Math.pow(2, (notes[i] - 69) / 12);
-        steps[i] = (TWO_PI * freq) / sampleRate;
-        if (notePhases[notes[i]] === undefined) {
-            notePhases[notes[i]] = 0;
+    // Check if USB audio has signal (sample first few frames)
+    let usbActive = false;
+    for (let f = 0; f < 4; f++) {
+        if (get_int16(2048 + 256 + f * 4 + 0) !== 0 || get_int16(2048 + 256 + f * 4 + 2) !== 0) {
+            usbActive = true;
+            break;
         }
     }
 
-    for (let frame = 0; frame < 128; frame++) {
-        let output = 0;
-
+    if (usbActive) {
+        // USB audio from Ableton — pass through, no sine
+        for (let frame = 0; frame < 128; frame++) {
+            const usb = passthrough(frame);
+            set_int16(256 + frame * 4 + 0, usb.l & 0xFFFF);
+            set_int16(256 + frame * 4 + 2, usb.r & 0xFFFF);
+        }
+    } else {
+        // No Ableton — use sine synth fallback
+        const steps = new Array(numNotes);
         for (let i = 0; i < numNotes; i++) {
-            const n = notes[i];
-            output += Math.sin(notePhases[n]);
-            notePhases[n] += steps[i];
-            if (notePhases[n] >= TWO_PI) {
-                notePhases[n] -= TWO_PI;
+            const freq = 440 * Math.pow(2, (notes[i] - 69) / 12);
+            steps[i] = (TWO_PI * freq) / sampleRate;
+            if (notePhases[notes[i]] === undefined) notePhases[notes[i]] = 0;
+        }
+        for (let frame = 0; frame < 128; frame++) {
+            let synth = 0;
+            for (let i = 0; i < numNotes; i++) {
+                const n = notes[i];
+                synth += Math.sin(notePhases[n]);
+                notePhases[n] += steps[i];
+                if (notePhases[n] >= TWO_PI) notePhases[n] -= TWO_PI;
             }
+            if (numNotes > 0) synth = synth / numNotes / 10;
+            const sample = synth * 32767;
+            set_int16(256 + frame * 4 + 0, sample & 0xFFFF);
+            set_int16(256 + frame * 4 + 2, sample & 0xFFFF);
         }
-
-        // Normalize by number of notes, then scale volume
-        if (numNotes > 0) {
-            output = output / numNotes / 10;
-        }
-
-        const sample = output * 32767;
-        set_int16(256 + frame * 4 + 0, sample & 0xFFFF);
-        set_int16(256 + frame * 4 + 2, sample & 0xFFFF);
     }
 }
 
 function playSilenceTick() {
     for (let frame = 0; frame < 128; frame++) {
-        set_int16(256 + frame * 4 + 0, 0);
-        set_int16(256 + frame * 4 + 2, 0);
+        // Pass through USB audio even when no internal notes playing
+        const usb = passthrough(frame);
+        set_int16(256 + frame * 4 + 0, usb.l & 0xFFFF);
+        set_int16(256 + frame * 4 + 2, usb.r & 0xFFFF);
     }
 }
 
@@ -292,14 +308,14 @@ function startNote(midiNote) {
     soundingNotes.add(midiNote);
     notePhases[midiNote] = 0;
     // Send note-on to Ableton via USB
-    move_midi_external_send([0x09, 0x90, midiNote, 100]);
+    move_midi_external_send([0x29, 0x90, midiNote, 100]);
 }
 
 function stopNote(midiNote) {
     soundingNotes.delete(midiNote);
     delete notePhases[midiNote];
     // Send note-off to Ableton via USB
-    move_midi_external_send([0x08, 0x80, midiNote, 0]);
+    move_midi_external_send([0x28, 0x80, midiNote, 0]);
 }
 
 function playChordSound(notes) {
@@ -307,17 +323,76 @@ function playChordSound(notes) {
     for (const n of notes) {
         soundingNotes.add(n);
         notePhases[n] = 0;
-        move_midi_external_send([0x09, 0x90, n, 100]);
+        move_midi_external_send([0x29, 0x90, n, 100]);
     }
 }
 
 function stopAllSound() {
     // Send note-off for all sounding notes before clearing
     for (const n of soundingNotes) {
-        move_midi_external_send([0x08, 0x80, n, 0]);
+        move_midi_external_send([0x28, 0x80, n, 0]);
     }
     soundingNotes.clear();
     notePhases = {};
+}
+
+// ---------------------------------------------------------------------------
+// Volume knob
+// ---------------------------------------------------------------------------
+
+let knobVolume = 100; // default volume (0-127)
+
+// ---------------------------------------------------------------------------
+// Drum sequencer — sends MIDI drums to Ableton on channel 10
+// ---------------------------------------------------------------------------
+
+// GM drum notes
+const DRUM_KICK = 36;
+const DRUM_SNARE = 38;
+const DRUM_HIHAT = 42;
+
+// 120 BPM, 8th notes: tick interval = 44100 / 128 / (120 * 2 / 60) ≈ 86 ticks per 8th
+const DRUM_BPM = 120;
+const TICKS_PER_SEC = 44100 / 128;
+const TICKS_PER_8TH = Math.round(TICKS_PER_SEC / (DRUM_BPM * 2 / 60));
+let drumTick = 0;
+let drumStep = 0; // 0-7 (8 eighth notes per bar)
+let drumEnabled = true;
+
+// Pattern: 8 steps per bar (8th notes)
+// Kick on 1, 3 (steps 0, 4). Snare on 2, 4 (steps 2, 6). Hi-hat on all.
+const DRUM_PATTERN = [
+    [DRUM_KICK, DRUM_HIHAT],   // 1
+    [DRUM_HIHAT],               // &
+    [DRUM_SNARE, DRUM_HIHAT],  // 2
+    [DRUM_HIHAT],               // &
+    [DRUM_KICK, DRUM_HIHAT],   // 3
+    [DRUM_HIHAT],               // &
+    [DRUM_SNARE, DRUM_HIHAT],  // 4
+    [DRUM_HIHAT],               // &
+];
+
+function drumNoteOn(note) {
+    // Send on MIDI channel 10 (0x99), cable 2
+    move_midi_external_send([0x29, 0x99, note, 100]);
+}
+
+function drumNoteOff(note) {
+    move_midi_external_send([0x28, 0x89, note, 0]);
+}
+
+function tickDrum() {
+    if (!drumEnabled) return;
+    drumTick++;
+    if (drumTick >= TICKS_PER_8TH) {
+        drumTick = 0;
+        // Note off previous step
+        const prevStep = (drumStep + 7) % 8;
+        for (const n of DRUM_PATTERN[prevStep]) drumNoteOff(n);
+        // Note on current step
+        for (const n of DRUM_PATTERN[drumStep]) drumNoteOn(n);
+        drumStep = (drumStep + 1) % 8;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -587,6 +662,19 @@ globalThis.onMidiMessageInternal = function (data) {
     if (isCC) {
         const cc = note;
         const val = velocity;
+
+        console.log("CC: " + cc + " val: " + val);
+
+        // Knob (CC 79) → volume control to Ableton
+        if (cc === 79) {
+            if (val === 1) knobVolume = clamp(knobVolume + 3, 0, 127);
+            else if (val === 127) knobVolume = clamp(knobVolume - 3, 0, 127);
+            console.log("Sending volume: " + knobVolume);
+            // Forward as CC 79 on cable 2 (same format as working note sends)
+            move_midi_external_send([2 << 4 | (0xB0 / 16), 0xB0, 79, knobVolume]);
+            return;
+        }
+
         if (val === 0) return;
 
         // Up/Down octave (during practice/quiz)
@@ -604,6 +692,16 @@ globalThis.onMidiMessageInternal = function (data) {
             buildGrid();
             if (phase === PH_PRACTICE) loadPracticeChord();
             else loadQuizChord();
+        } else if (cc === 85) {
+            // Play button — toggle drum beat
+            drumEnabled = !drumEnabled;
+            if (!drumEnabled) {
+                // Send note-off for all drums
+                drumNoteOff(DRUM_KICK);
+                drumNoteOff(DRUM_SNARE);
+                drumNoteOff(DRUM_HIHAT);
+            }
+            console.log("Drums: " + (drumEnabled ? "ON" : "OFF"));
         }
     }
 };
@@ -633,6 +731,9 @@ globalThis.tick = function (deltaTime) {
     } else {
         playSilenceTick();
     }
+
+    // Drum sequencer
+    tickDrum();
 
     // Splash timer — redraw every tick so palette init doesn't blank it
     if (phase === PH_SPLASH) {
