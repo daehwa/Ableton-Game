@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Move Chord Trainer — Simulator</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #1a1a2e;
+    color: #fff;
+    font-family: 'Courier New', monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+}
+h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
+#display {
+    border: 2px solid #555;
+    background: #000;
+    image-rendering: pixelated;
+    margin-bottom: 16px;
+}
+#buttons {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+#buttons button {
+    background: #333;
+    color: #ccc;
+    border: 1px solid #555;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 13px;
+}
+#buttons button:hover { background: #444; }
+#pad-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 72px);
+    grid-template-rows: repeat(4, 72px);
+    gap: 4px;
+    margin-bottom: 16px;
+}
+.pad {
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid #333;
+    transition: background-color 0.05s;
+}
+.pad .key { font-size: 18px; font-weight: bold; }
+.pad.pressed { transform: scale(0.93); }
+#info {
+    color: #555;
+    font-size: 11px;
+    text-align: center;
+    line-height: 1.6;
+}
+</style>
+</head>
+<body>
+<h1>Move Chord Trainer — Browser Simulator</h1>
+<canvas id="display" width="512" height="256"></canvas>
+<div id="buttons">
+    <button id="btn-up">&#9650; Octave Up</button>
+    <button id="btn-down">&#9660; Octave Down</button>
+</div>
+<div id="pad-grid"></div>
+<div id="info">
+    Top row <b>1 2 3 4 5 6 7 8</b> &nbsp;|&nbsp;
+    Row 2 <b>Q W E R T Y U I</b> &nbsp;|&nbsp;
+    Row 1 <b>A S D F G H J K</b> &nbsp;|&nbsp;
+    Bottom <b>Z X C V B N M ,</b><br>
+    Arrow keys: &uarr; Octave Up &darr; Octave Down<br>
+    <br>Requires local server: <code>cd move-anything && python3 -m http.server</code>
+</div>
+
+<!-- ================================================================
+     Define Move API stubs BEFORE the module import.
+     Regular scripts run synchronously before module scripts.
+     ================================================================ -->
+<script>
+// --- Canvas display (128x64 scaled 4x) ---
+const dCanvas = document.getElementById('display');
+const dCtx = dCanvas.getContext('2d');
+dCtx.imageSmoothingEnabled = false;
+
+// Override window globals to match Move's QuickJS API
+window.clear_screen = function() {
+    dCtx.fillStyle = '#000';
+    dCtx.fillRect(0, 0, 512, 256);
+};
+
+// Override browser's print() with Move's print(x, y, str, color)
+window.print = function(x, y, str, color) {
+    dCtx.fillStyle = color === 1 ? '#fff' : '#000';
+    dCtx.font = '44px monospace';
+    dCtx.fillText(String(str), x * 4, (y + 10) * 4);
+};
+
+window.set_int16 = function() {};
+window.get_int16 = function() { return 0; };
+window.set_pixel = function() {};
+
+// --- Pad grid UI ---
+const KEY_LABELS = [
+    ['Z','X','C','V','B','N','M',','],
+    ['A','S','D','F','G','H','J','K'],
+    ['Q','W','E','R','T','Y','U','I'],
+    ['1','2','3','4','5','6','7','8'],
+];
+const PALETTE_CSS = {
+    0: { bg: '#222', fg: '#555' },
+    1: { bg: '#00c8b4', fg: '#003' },
+    2: { bg: '#00e050', fg: '#003' },
+    3: { bg: '#ff2828', fg: '#fff' },
+};
+const padElements = {};
+const padColorState = {};
+const padGridEl = document.getElementById('pad-grid');
+
+// Build grid (top row first visually = row 3)
+for (let r = 3; r >= 0; r--) {
+    for (let c = 0; c < 8; c++) {
+        const padNote = 68 + r * 8 + c;
+        const el = document.createElement('div');
+        el.className = 'pad';
+        el.innerHTML = '<span class="key">' + KEY_LABELS[r][c] + '</span>';
+        el.style.background = '#222';
+        el.style.color = '#555';
+        el.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            window._simTriggerPad(padNote, true);
+        });
+        el.addEventListener('mouseup', function() { window._simTriggerPad(padNote, false); });
+        el.addEventListener('mouseleave', function() { window._simTriggerPad(padNote, false); });
+        padGridEl.appendChild(el);
+        padElements[padNote] = el;
+        padColorState[padNote] = 0;
+    }
+}
+
+function updatePadUI() {
+    for (let n = 68; n <= 99; n++) {
+        const pal = padColorState[n] || 0;
+        const style = PALETTE_CSS[pal] || PALETTE_CSS[0];
+        padElements[n].style.background = style.bg;
+        padElements[n].style.color = style.fg;
+    }
+}
+
+// --- Move MIDI stubs ---
+window.move_midi_internal_send = function(data) {
+    // Capture pad color changes: [0x09, 0x90, note, palette]
+    if (data.length >= 4 && (data[0] & 0x0F) === 0x09 && data[1] === 0x90) {
+        padColorState[data[2]] = data[3];
+        updatePadUI();
+    }
+};
+
+// --- Web Audio ---
+let audioCtx = null;
+const oscMap = {};
+
+function ensureAudio() {
+    if (!audioCtx) audioCtx = new AudioContext();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+// Intercept external MIDI to play audio via Web Audio API
+window.move_midi_external_send = function(data) {
+    if (!data || data.length < 4) return;
+    const status = data[1];
+    const midi = data[2];
+
+    if (status === 0x90 && !oscMap[midi]) {
+        // Note on
+        ensureAudio();
+        const freq = 440 * Math.pow(2, (midi - 69) / 12);
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.value = 0.07;
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        oscMap[midi] = { osc, gain };
+    } else if (status === 0x80 && oscMap[midi]) {
+        // Note off
+        oscMap[midi].gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.05);
+        oscMap[midi].osc.stop(audioCtx.currentTime + 0.06);
+        delete oscMap[midi];
+    }
+};
+
+// Placeholder — module script sets this up
+window._simTriggerPad = function() {};
+</script>
+
+<!-- ================================================================
+     Import chord_trainer.js as a module.
+     It will use the globals defined above (print, clear_screen, etc.)
+     and set globalThis.init, globalThis.tick, globalThis.onMidiMessageInternal.
+     ================================================================ -->
+<script type="module">
+import './src/chord_trainer.js';
+
+// --- Keyboard → pad mapping ---
+const KEY_ROWS = [
+    ['z','x','c','v','b','n','m',','],
+    ['a','s','d','f','g','h','j','k'],
+    ['q','w','e','r','t','y','u','i'],
+    ['1','2','3','4','5','6','7','8'],
+];
+const keyToPad = {};
+for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 8; c++) {
+        keyToPad[KEY_ROWS[r][c]] = 68 + r * 8 + c;
+    }
+}
+
+const keysDown = {};
+
+function triggerPad(padNote, down) {
+    if (down && !keysDown[padNote]) {
+        keysDown[padNote] = true;
+        if (padElements[padNote]) padElements[padNote].classList.add('pressed');
+        globalThis.onMidiMessageInternal([0x90, padNote, 127]);
+    } else if (!down && keysDown[padNote]) {
+        delete keysDown[padNote];
+        if (padElements[padNote]) padElements[padNote].classList.remove('pressed');
+        globalThis.onMidiMessageInternal([0x80, padNote, 0]);
+    }
+}
+
+// Expose to regular script for mouse events
+window._simTriggerPad = triggerPad;
+
+function sendCC(cc) {
+    globalThis.onMidiMessageInternal([0xB0, cc, 127]);
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.repeat) return;
+    const k = e.key.toLowerCase();
+    if (k === 'arrowup') { sendCC(55); return; }
+    if (k === 'arrowdown') { sendCC(54); return; }
+    const pad = keyToPad[k];
+    if (pad !== undefined) {
+        e.preventDefault();
+        triggerPad(pad, true);
+    }
+});
+
+document.addEventListener('keyup', function(e) {
+    const k = e.key.toLowerCase();
+    const pad = keyToPad[k];
+    if (pad !== undefined) triggerPad(pad, false);
+});
+
+document.getElementById('btn-up').addEventListener('click', function() { sendCC(55); });
+document.getElementById('btn-down').addEventListener('click', function() { sendCC(54); });
+
+// --- Init ---
+globalThis.init();
+
+// --- Tick loop matching Move's ~344 Hz (44100/128) ---
+const MOVE_TICK_MS = 1000 / (44100 / 128); // ~2.9ms
+let lastTime = 0;
+let accumulator = 0;
+
+function animLoop(timestamp) {
+    if (lastTime === 0) lastTime = timestamp;
+    accumulator += timestamp - lastTime;
+    lastTime = timestamp;
+
+    // Cap to avoid spiral when tab is backgrounded
+    if (accumulator > 50) accumulator = 50;
+
+    while (accumulator >= MOVE_TICK_MS) {
+        globalThis.tick(MOVE_TICK_MS);
+        accumulator -= MOVE_TICK_MS;
+    }
+    requestAnimationFrame(animLoop);
+}
+requestAnimationFrame(animLoop);
+</script>
+</body>
+</html>
