@@ -94,11 +94,8 @@ function clearAllPads() {
     for (let n = 68; n <= 99; n++) {
         setPadColor(n, PAL_OFF);
     }
-    // Also clear sequencer row and track selectors
+    // Also clear sequencer row
     for (let n = 16; n <= 31; n++) {
-        setPadColor(n, PAL_OFF);
-    }
-    for (let n = 40; n <= 43; n++) {
         setPadColor(n, PAL_OFF);
     }
 }
@@ -404,6 +401,7 @@ const PH_SPLASH   = 0;
 const PH_SCREEN   = 1;  // timed transition screen
 const PH_PRACTICE = 2;
 const PH_QUIZ     = 3;
+const PH_PROGRESSION = 4;
 
 let phase = PH_SPLASH;
 let phaseTimer = 0;
@@ -413,6 +411,11 @@ let afterScreenFn = null;  // function to call when screen timer expires
 
 // Stage = inversion level: 0=root, 1=1st, 2=2nd
 let stage = 0;
+
+// Game levels (track buttons)
+const LEVEL_CHORDS = 0;
+const LEVEL_PROGRESSION = 1;
+let gameLevel = LEVEL_CHORDS;
 
 // Practice: diatonic triads in C major, C through B
 const PRACTICE_CHORDS = [
@@ -425,6 +428,15 @@ const PRACTICE_CHORDS = [
     { rootPc: 11, type: "Dim" },
 ];
 let practiceIdx = 0;
+
+// I-IV-V chord progression
+const PROGRESSION_145 = [
+    { rootPc: 0, type: "Maj", numeral: "I" },
+    { rootPc: 5, type: "Maj", numeral: "IV" },
+    { rootPc: 7, type: "Maj", numeral: "V" },
+];
+let progIdx = 0;
+let progRound = 0;
 
 // Quiz state
 let quizScore = 0;
@@ -469,6 +481,7 @@ function enterScreen(line1, line2, ticks, nextFn) {
     clear_screen();
     print(2, 16, line1, 1);
     if (line2) print(2, 36, line2, 1);
+    updateTrackLEDs();
 }
 
 function startPractice() {
@@ -509,6 +522,7 @@ function loadPracticeChord() {
     feedbackTimer = 0;
 
     clearAllPads();
+    updateTrackLEDs();
     for (const pn of targetPadNotes) setPadColor(pn, PAL_CUE);
     updatePracticeDisplay();
 }
@@ -535,6 +549,7 @@ function loadQuizChord() {
 
     // Light only ONE random hint pad
     clearAllPads();
+    updateTrackLEDs();
     hintPadNote = targetPadNotes[Math.floor(Math.random() * targetPadNotes.length)];
     setPadColor(hintPadNote, PAL_CUE);
     updateQuizDisplay();
@@ -553,6 +568,75 @@ function onQuizDone() {
     }
     const labels = ["Chord", "1st Inv", "2nd Inv"];
     enterScreen("Practice!", labels[stage], 700, startPractice);
+}
+
+// ---------------------------------------------------------------------------
+// I-IV-V Progression game
+// ---------------------------------------------------------------------------
+
+function startProgression() {
+    phase = PH_PROGRESSION;
+    progIdx = 0;
+    loadProgressionChord();
+}
+
+function loadProgressionChord() {
+    const ch = PROGRESSION_145[progIdx];
+    const notes = makeChord(ch.rootPc, ch.type, 0);
+    const padPositions = findChordPads(notes);
+
+    if (!padPositions) return;
+
+    targetChordName = ch.numeral + ": " + NOTE_NAMES[ch.rootPc] + " " + ch.type;
+    targetNotes = notes;
+    targetPadNotes = padPositions.map(function(p) { return gridPosToNote(p.row, p.col); });
+    targetPadSet = {};
+    for (const pn of targetPadNotes) targetPadSet[pn] = true;
+    hitPads = {};
+    roundComplete = false;
+    hasWrongPress = false;
+    feedbackTimer = 0;
+
+    clearAllPads();
+    updateTrackLEDs();
+    for (const pn of targetPadNotes) setPadColor(pn, PAL_CUE);
+}
+
+function updateProgressionDisplay() {
+    clear_screen();
+    const ch = PROGRESSION_145[progIdx];
+    print(2, 6, "I-IV-V", 1);
+    print(2, 24, ch.numeral + ": " + NOTE_NAMES[ch.rootPc] + " " + ch.type, 1);
+    print(2, 44, "Round " + (progRound + 1), 1);
+}
+
+// ---------------------------------------------------------------------------
+// Track button LED management
+// ---------------------------------------------------------------------------
+
+function setButtonColor(cc, paletteIndex) {
+    move_midi_internal_send([0x0B, 0xB0, cc, paletteIndex]);
+}
+
+function updateTrackLEDs() {
+    for (let n = 40; n <= 43; n++) setButtonColor(n, PAL_OFF);
+    if (gameLevel === LEVEL_CHORDS) setButtonColor(40, PAL_CUE);
+    else if (gameLevel === LEVEL_PROGRESSION) setButtonColor(41, PAL_CUE);
+}
+
+function switchGameLevel(level) {
+    gameLevel = level;
+    stopAllSound();
+    clearAllPads();
+    clearButtons();
+    updateTrackLEDs();
+    stage = 0;
+
+    if (level === LEVEL_CHORDS) {
+        enterScreen("Chord!", "Practice", 520, startPractice);
+    } else if (level === LEVEL_PROGRESSION) {
+        enterScreen("I-IV-V!", "Practice", 520, startProgression);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +689,8 @@ function handlePadPress(padNote, velocity) {
         feedbackTimer = 200;
 
         if (phase === PH_PRACTICE) updatePracticeDisplay();
-        else updateQuizDisplay();
+        else if (phase === PH_QUIZ) updateQuizDisplay();
+        else if (phase === PH_PROGRESSION) updateProgressionDisplay();
     }
 }
 
@@ -646,14 +731,14 @@ globalThis.onMidiMessageInternal = function (data) {
     if ((isNoteOn || isNoteOff) && note < 10) return;
 
     if (isNoteOn && note >= 68 && note <= 99) {
-        if (phase === PH_PRACTICE || phase === PH_QUIZ) {
+        if (phase === PH_PRACTICE || phase === PH_QUIZ || phase === PH_PROGRESSION) {
             handlePadPress(note, velocity);
         }
         return;
     }
 
     if (isNoteOff && note >= 68 && note <= 99) {
-        if (phase === PH_PRACTICE || phase === PH_QUIZ) {
+        if (phase === PH_PRACTICE || phase === PH_QUIZ || phase === PH_PROGRESSION) {
             handlePadRelease(note);
         }
         return;
@@ -677,21 +762,27 @@ globalThis.onMidiMessageInternal = function (data) {
 
         if (val === 0) return;
 
+        // Track buttons (CC 40-43) — switch game level
+        if (cc === 40) { switchGameLevel(LEVEL_CHORDS); return; }
+        if (cc === 41) { switchGameLevel(LEVEL_PROGRESSION); return; }
+
         // Up/Down octave (during practice/quiz)
-        if (cc === 55 && (phase === PH_PRACTICE || phase === PH_QUIZ)) {
+        if (cc === 55 && (phase === PH_PRACTICE || phase === PH_QUIZ || phase === PH_PROGRESSION)) {
             rootMidi += 12;
             if (rootMidi > 96) rootMidi = 96;
             stopAllSound();
             buildGrid();
             if (phase === PH_PRACTICE) loadPracticeChord();
-            else loadQuizChord();
-        } else if (cc === 54 && (phase === PH_PRACTICE || phase === PH_QUIZ)) {
+            else if (phase === PH_QUIZ) loadQuizChord();
+            else if (phase === PH_PROGRESSION) loadProgressionChord();
+        } else if (cc === 54 && (phase === PH_PRACTICE || phase === PH_QUIZ || phase === PH_PROGRESSION)) {
             rootMidi -= 12;
             if (rootMidi < 24) rootMidi = 24;
             stopAllSound();
             buildGrid();
             if (phase === PH_PRACTICE) loadPracticeChord();
-            else loadQuizChord();
+            else if (phase === PH_QUIZ) loadQuizChord();
+            else if (phase === PH_PROGRESSION) loadProgressionChord();
         } else if (cc === 85) {
             // Play button — toggle drum beat
             drumEnabled = !drumEnabled;
@@ -717,6 +808,7 @@ globalThis.init = function () {
     setupPalette();
     clearAllPads();
     clearButtons();
+    updateTrackLEDs();
 
     phase = PH_SPLASH;
     phaseTimer = 520; // ~1.5 seconds
@@ -742,7 +834,11 @@ globalThis.tick = function (deltaTime) {
         phaseTimer--;
         if (phaseTimer <= 0) {
             stage = 0;
-            startPractice();
+            if (gameLevel === LEVEL_CHORDS) {
+                startPractice();
+            } else if (gameLevel === LEVEL_PROGRESSION) {
+                startProgression();
+            }
         }
         return;
     }
@@ -762,6 +858,7 @@ globalThis.tick = function (deltaTime) {
     // Redraw display every tick
     if (phase === PH_PRACTICE) updatePracticeDisplay();
     else if (phase === PH_QUIZ) updateQuizDisplay();
+    else if (phase === PH_PROGRESSION) updateProgressionDisplay();
 
     // Feedback timer after completing a chord
     if (roundComplete && feedbackTimer > 0) {
@@ -777,6 +874,18 @@ globalThis.tick = function (deltaTime) {
                     onQuizDone();
                 } else {
                     loadQuizChord();
+                }
+            } else if (phase === PH_PROGRESSION) {
+                progIdx++;
+                if (progIdx >= PROGRESSION_145.length) {
+                    progRound++;
+                    progIdx = 0;
+                    enterScreen("Round " + progRound + "!", "I-IV-V", 400, function() {
+                        phase = PH_PROGRESSION;
+                        loadProgressionChord();
+                    });
+                } else {
+                    loadProgressionChord();
                 }
             }
         }
