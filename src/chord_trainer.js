@@ -25,14 +25,12 @@ const PAL_OFF      = 0;   // black/off
 const PAL_CUE      = 1;   // teal — press this pad
 const PAL_CORRECT  = 2;   // green — correct press
 const PAL_WRONG    = 3;   // red — wrong press
-const PAL_IDLE     = 4;   // dim grey — not part of chord
 
 function setupPalette() {
     setPaletteEntry(PAL_OFF,     0,   0,   0,  0);
-    setPaletteEntry(PAL_CUE,     0, 200, 180, 40);   // teal
-    setPaletteEntry(PAL_CORRECT, 0, 255,  80, 20);    // green
-    setPaletteEntry(PAL_WRONG, 255,  40,  40,  0);    // red
-    setPaletteEntry(PAL_IDLE,   20,  20,  30, 10);    // dim
+    setPaletteEntry(PAL_CUE,     0, 200, 180, 40);
+    setPaletteEntry(PAL_CORRECT, 0, 255,  80, 20);
+    setPaletteEntry(PAL_WRONG, 255,  40,  40,  0);
     reapplyPalette();
 }
 
@@ -151,27 +149,34 @@ const DIFFICULTY = {
 };
 
 // ---------------------------------------------------------------------------
-// Pad layout — chromatic with 4ths (matches Move default)
+// Pad layout — diatonic 4ths-in-key (C major)
 // ---------------------------------------------------------------------------
 
-const ROOT_MIDI = 48;  // C3
-const ROW_INTERVAL = 5;  // perfect 4th
-const COL_INTERVAL = 1;  // chromatic
+let rootMidi = 48;  // C3
+const SCALE = [0, 2, 4, 5, 7, 9, 11]; // C major
 
 // Build grid: gridNote[row][col] = MIDI note
-const gridNote = [];
+let gridNote = [];
 // Also: noteToGridPos[midiNote] = [{row, col}, ...]
-const noteToGridPos = {};
+let noteToGridPos = {};
 
-for (let r = 0; r < 4; r++) {
-    gridNote[r] = [];
-    for (let c = 0; c < 8; c++) {
-        const midi = ROOT_MIDI + r * ROW_INTERVAL + c * COL_INTERVAL;
-        gridNote[r][c] = midi;
-        if (!noteToGridPos[midi]) noteToGridPos[midi] = [];
-        noteToGridPos[midi].push({ row: r, col: c });
+function buildGrid() {
+    gridNote = [];
+    noteToGridPos = {};
+    for (let r = 0; r < 4; r++) {
+        gridNote[r] = [];
+        for (let c = 0; c < 8; c++) {
+            const degree = c + r * 3; // each row = diatonic 4th = 3 scale steps
+            const octave = Math.floor(degree / 7);
+            const midi = rootMidi + octave * 12 + SCALE[degree % 7];
+            gridNote[r][c] = midi;
+            if (!noteToGridPos[midi]) noteToGridPos[midi] = [];
+            noteToGridPos[midi].push({ row: r, col: c });
+        }
     }
 }
+
+buildGrid();
 
 function gridPosToNote(row, col) {
     return 68 + row * 8 + col;
@@ -285,212 +290,268 @@ function playSilenceTick() {
 
 function startNote(midiNote) {
     soundingNotes.add(midiNote);
-    notePhases[midiNote] = 0;  // start from zero phase for clean attack
+    notePhases[midiNote] = 0;
+    // Send note-on to Ableton via USB
+    move_midi_external_send([0x09, 0x90, midiNote, 100]);
 }
 
 function stopNote(midiNote) {
     soundingNotes.delete(midiNote);
     delete notePhases[midiNote];
+    // Send note-off to Ableton via USB
+    move_midi_external_send([0x08, 0x80, midiNote, 0]);
 }
 
 function playChordSound(notes) {
-    soundingNotes.clear();
-    notePhases = {};
+    stopAllSound();
     for (const n of notes) {
         soundingNotes.add(n);
         notePhases[n] = 0;
+        move_midi_external_send([0x09, 0x90, n, 100]);
     }
 }
 
 function stopAllSound() {
+    // Send note-off for all sounding notes before clearing
+    for (const n of soundingNotes) {
+        move_midi_external_send([0x08, 0x80, n, 0]);
+    }
     soundingNotes.clear();
     notePhases = {};
 }
 
 // ---------------------------------------------------------------------------
-// Game state
+// Game state machine
 // ---------------------------------------------------------------------------
 
-let difficulty = "easy";
-let score = 0;
-let total = 0;
-let streak = 0;
-let bestStreak = 0;
+// Phases
+const PH_SPLASH   = 0;
+const PH_SCREEN   = 1;  // timed transition screen
+const PH_PRACTICE = 2;
+const PH_QUIZ     = 3;
 
+let phase = PH_SPLASH;
+let phaseTimer = 0;
+let screenText1 = "";
+let screenText2 = "";
+let afterScreenFn = null;  // function to call when screen timer expires
+
+// Stage = inversion level: 0=root, 1=1st, 2=2nd
+let stage = 0;
+
+// Practice: diatonic triads in C major, C through B
+const PRACTICE_CHORDS = [
+    { rootPc: 0,  type: "Maj" },
+    { rootPc: 2,  type: "Min" },
+    { rootPc: 4,  type: "Min" },
+    { rootPc: 5,  type: "Maj" },
+    { rootPc: 7,  type: "Maj" },
+    { rootPc: 9,  type: "Min" },
+    { rootPc: 11, type: "Dim" },
+];
+let practiceIdx = 0;
+
+// Quiz state
+let quizScore = 0;
+let hintPadNote = -1;
+
+// Shared chord state
 let targetChordName = "";
-let targetNotes = [];     // MIDI note numbers
-let targetPadNotes = [];  // pad note numbers (68-99)
-let targetPadSet = {};    // padNote -> true (for quick lookup)
-let pressedPads = {};     // padNote -> true
+let targetNotes = [];
+let targetPadNotes = [];
+let targetPadSet = {};
+let hitPads = {};      // pads correctly pressed (persist across release)
 let roundComplete = false;
 let hasWrongPress = false;
-let feedbackMsg = "";
 let feedbackTimer = 0;
-let animCounter = 0;
-let pulsePhase = 0;
 
-function nextChord() {
-    const diff = DIFFICULTY[difficulty];
-    let chordName, padPositions, notes;
+// ---------------------------------------------------------------------------
+// Chord builder with inversion
+// ---------------------------------------------------------------------------
 
-    for (let attempt = 0; attempt < 100; attempt++) {
-        const rootPc = diff.roots[Math.floor(Math.random() * diff.roots.length)];
-        const type = diff.types[Math.floor(Math.random() * diff.types.length)];
-        const rootMidi = ROOT_MIDI + rootPc; // octave 3
-        const intervals = CHORD_TYPES[type];
-        notes = intervals.map(i => rootMidi + i);
-        padPositions = findChordPads(notes);
-
-        if (padPositions) {
-            chordName = NOTE_NAMES[rootPc] + " " + type;
-            break;
-        }
+function makeChord(rootPc, type, inversion) {
+    const intervals = CHORD_TYPES[type];
+    const chordRoot = rootMidi + rootPc;
+    let notes = intervals.map(function(i) { return chordRoot + i; });
+    for (let i = 0; i < inversion; i++) {
+        notes.push(notes.shift() + 12);
     }
+    return notes;
+}
+
+// ---------------------------------------------------------------------------
+// Phase transitions
+// ---------------------------------------------------------------------------
+
+function enterScreen(line1, line2, ticks, nextFn) {
+    phase = PH_SCREEN;
+    screenText1 = line1;
+    screenText2 = line2;
+    afterScreenFn = nextFn;
+    phaseTimer = ticks;
+    stopAllSound();
+    clearAllPads();
+    clear_screen();
+    print(2, 16, line1, 1);
+    if (line2) print(2, 36, line2, 1);
+}
+
+function startPractice() {
+    phase = PH_PRACTICE;
+    practiceIdx = 0;
+    loadPracticeChord();
+}
+
+function startQuiz() {
+    phase = PH_QUIZ;
+    quizScore = 0;
+    loadQuizChord();
+}
+
+function loadPracticeChord() {
+    if (practiceIdx >= PRACTICE_CHORDS.length) {
+        onPracticeDone();
+        return;
+    }
+    const ch = PRACTICE_CHORDS[practiceIdx];
+    const notes = makeChord(ch.rootPc, ch.type, stage);
+    const padPositions = findChordPads(notes);
 
     if (!padPositions) {
-        // Fallback C Major
-        notes = [48, 52, 55];
-        padPositions = findChordPads(notes);
-        chordName = "C Maj";
+        practiceIdx++;
+        loadPracticeChord();
+        return;
     }
 
-    targetChordName = chordName;
+    targetChordName = NOTE_NAMES[ch.rootPc] + " " + ch.type;
     targetNotes = notes;
-    targetPadNotes = padPositions.map(p => gridPosToNote(p.row, p.col));
+    targetPadNotes = padPositions.map(function(p) { return gridPosToNote(p.row, p.col); });
     targetPadSet = {};
     for (const pn of targetPadNotes) targetPadSet[pn] = true;
-
-    pressedPads = {};
+    hitPads = {};
     roundComplete = false;
     hasWrongPress = false;
-    feedbackMsg = "";
+    feedbackTimer = 0;
 
-    // Light up pads
-    showChordOnPads();
-    updateDisplay();
+    clearAllPads();
+    for (const pn of targetPadNotes) setPadColor(pn, PAL_CUE);
+    updatePracticeDisplay();
 }
 
-function showChordOnPads() {
-    // Set all grid pads to idle
-    for (let n = 68; n <= 99; n++) {
-        setPadColor(n, PAL_IDLE);
+function loadQuizChord() {
+    const ch = PRACTICE_CHORDS[Math.floor(Math.random() * PRACTICE_CHORDS.length)];
+    const notes = makeChord(ch.rootPc, ch.type, stage);
+    const padPositions = findChordPads(notes);
+
+    if (!padPositions) {
+        loadQuizChord();
+        return;
     }
-    // Highlight target pads
-    for (const pn of targetPadNotes) {
-        setPadColor(pn, PAL_CUE);
-    }
+
+    targetChordName = NOTE_NAMES[ch.rootPc] + " " + ch.type;
+    targetNotes = notes;
+    targetPadNotes = padPositions.map(function(p) { return gridPosToNote(p.row, p.col); });
+    targetPadSet = {};
+    for (const pn of targetPadNotes) targetPadSet[pn] = true;
+    hitPads = {};
+    roundComplete = false;
+    hasWrongPress = false;
+    feedbackTimer = 0;
+
+    // Light only ONE random hint pad
+    clearAllPads();
+    hintPadNote = targetPadNotes[Math.floor(Math.random() * targetPadNotes.length)];
+    setPadColor(hintPadNote, PAL_CUE);
+    updateQuizDisplay();
 }
+
+function onPracticeDone() {
+    const labels = ["Chord", "1st Inv", "2nd Inv"];
+    enterScreen("Quiz!", labels[stage], 700, startQuiz);
+}
+
+function onQuizDone() {
+    stage++;
+    if (stage > 2) {
+        enterScreen("Complete!", "", 999999, null);
+        return;
+    }
+    const labels = ["Chord", "1st Inv", "2nd Inv"];
+    enterScreen("Practice!", labels[stage], 700, startPractice);
+}
+
+// ---------------------------------------------------------------------------
+// Display
+// ---------------------------------------------------------------------------
+
+function updatePracticeDisplay() {
+    clear_screen();
+    print(2, 16, "Practice!", 1);
+    print(2, 36, targetChordName, 1);
+}
+
+function updateQuizDisplay() {
+    clear_screen();
+    print(2, 16, targetChordName, 1);
+    print(2, 36, "" + quizScore + "/10", 1);
+}
+
+// ---------------------------------------------------------------------------
+// Pad handlers
+// ---------------------------------------------------------------------------
 
 function handlePadPress(padNote, velocity) {
     if (roundComplete) return;
 
-    pressedPads[padNote] = true;
-
-    // Play the note sound
     const pos = noteNumberToGridPos(padNote);
-    if (pos) {
-        const midiNote = gridNote[pos.row][pos.col];
-        startNote(midiNote);
-    }
+    if (pos) startNote(gridNote[pos.row][pos.col]);
 
-    // Update LED
     if (targetPadSet[padNote]) {
+        hitPads[padNote] = true;
         setPadColor(padNote, PAL_CORRECT);
     } else {
         setPadColor(padNote, PAL_WRONG);
         hasWrongPress = true;
     }
 
-    // Check if all target pads are pressed
-    let allPressed = true;
+    // Check if all target pads have been hit
+    let allHit = true;
     for (const pn of targetPadNotes) {
-        if (!pressedPads[pn]) {
-            allPressed = false;
-            break;
-        }
+        if (!hitPads[pn]) { allHit = false; break; }
     }
 
-    if (allPressed) {
-        completeRound();
+    if (allHit) {
+        roundComplete = true;
+
+        if (phase === PH_QUIZ && !hasWrongPress) quizScore++;
+
+        playChordSound(targetNotes);
+        for (const pn of targetPadNotes) setPadColor(pn, PAL_CORRECT);
+        feedbackTimer = 200;
+
+        if (phase === PH_PRACTICE) updatePracticeDisplay();
+        else updateQuizDisplay();
     }
 }
 
 function handlePadRelease(padNote) {
-    delete pressedPads[padNote];
-
-    // Stop the note sound
     const pos = noteNumberToGridPos(padNote);
-    if (pos) {
-        const midiNote = gridNote[pos.row][pos.col];
-        stopNote(midiNote);
-    }
+    if (pos) stopNote(gridNote[pos.row][pos.col]);
 
     if (!roundComplete) {
-        // Restore cue color if it's a target pad
-        if (targetPadSet[padNote]) {
-            setPadColor(padNote, PAL_CUE);
+        if (targetPadSet[padNote] && hitPads[padNote]) {
+            // Already correctly hit — keep green
+            setPadColor(padNote, PAL_CORRECT);
+        } else if (targetPadSet[padNote]) {
+            // Target pad not yet hit — restore cue (practice) or hint
+            if (phase === PH_QUIZ && padNote !== hintPadNote) {
+                setPadColor(padNote, PAL_OFF);
+            } else {
+                setPadColor(padNote, PAL_CUE);
+            }
         } else {
-            setPadColor(padNote, PAL_IDLE);
+            setPadColor(padNote, PAL_OFF);
         }
-    }
-}
-
-function completeRound() {
-    roundComplete = true;
-    total++;
-
-    if (!hasWrongPress) {
-        score++;
-        streak++;
-        if (streak > bestStreak) bestStreak = streak;
-        feedbackMsg = streak >= 3 ? "PERFECT!" : "CORRECT!";
-    } else {
-        streak = 0;
-        feedbackMsg = "TRY AGAIN";
-    }
-
-    feedbackTimer = 60; // frames until auto-advance
-    updateDisplay();
-
-    // Play the full chord via external MIDI
-    playChordSound(targetNotes);
-
-    // Flash all target pads green
-    for (const pn of targetPadNotes) {
-        setPadColor(pn, PAL_CORRECT);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Display (128x64 monochrome)
-// ---------------------------------------------------------------------------
-
-function updateDisplay() {
-    clear_screen();
-
-    // print(x, y, string, color)  — color: 1=white, 0=black
-    // Line 1: Chord name
-    print(2, 2, targetChordName, 1);
-
-    // Line 2: Note names
-    const noteStr = targetNotes.map(n => midiToName(n)).join(" ");
-    print(2, 16, noteStr, 1);
-
-    // Line 3: Score
-    print(2, 30, "Score:" + score + "/" + total + " Streak:" + streak, 1);
-
-    // Line 4: Feedback or difficulty
-    if (feedbackMsg) {
-        print(2, 44, feedbackMsg, 1);
-    } else {
-        print(2, 44, "Diff:" + difficulty + " Best:" + bestStreak, 1);
-    }
-
-    // Line 5: Instructions
-    if (roundComplete) {
-        print(2, 56, "Press any pad for next", 1);
-    } else {
-        print(2, 56, "Press the lit pads!", 1);
     }
 }
 
@@ -507,60 +568,47 @@ globalThis.onMidiMessageInternal = function (data) {
     const isNoteOff = status === 0x80 || (status === 0x90 && velocity === 0);
     const isCC = status === 0xB0;
 
-    // Ignore capacitive touch (notes < 10)
     if ((isNoteOn || isNoteOff) && note < 10) return;
 
-    // Grid pad press (notes 68-99)
     if (isNoteOn && note >= 68 && note <= 99) {
-        if (roundComplete) {
-            // Any pad press advances to next chord
-            nextChord();
-            return;
+        if (phase === PH_PRACTICE || phase === PH_QUIZ) {
+            handlePadPress(note, velocity);
         }
-        handlePadPress(note, velocity);
         return;
     }
 
     if (isNoteOff && note >= 68 && note <= 99) {
-        handlePadRelease(note);
+        if (phase === PH_PRACTICE || phase === PH_QUIZ) {
+            handlePadRelease(note);
+        }
         return;
     }
 
-    // Button controls via CC
     if (isCC) {
         const cc = note;
         const val = velocity;
-        if (val === 0) return; // ignore release
+        if (val === 0) return;
 
-        if (cc === 54) {
-            // Down button — decrease difficulty
-            if (difficulty === "hard") difficulty = "medium";
-            else if (difficulty === "medium") difficulty = "easy";
-            nextChord();
-        } else if (cc === 55) {
-            // Up button — increase difficulty
-            if (difficulty === "easy") difficulty = "medium";
-            else if (difficulty === "medium") difficulty = "hard";
-            nextChord();
-        } else if (cc === 56) {
-            // Undo button — reset score
-            score = 0;
-            total = 0;
-            streak = 0;
-            bestStreak = 0;
-            feedbackMsg = "RESET";
-            feedbackTimer = 30;
-            updateDisplay();
-        } else if (cc === 85) {
-            // Play button — next chord
-            nextChord();
+        // Up/Down octave (during practice/quiz)
+        if (cc === 55 && (phase === PH_PRACTICE || phase === PH_QUIZ)) {
+            rootMidi += 12;
+            if (rootMidi > 96) rootMidi = 96;
+            stopAllSound();
+            buildGrid();
+            if (phase === PH_PRACTICE) loadPracticeChord();
+            else loadQuizChord();
+        } else if (cc === 54 && (phase === PH_PRACTICE || phase === PH_QUIZ)) {
+            rootMidi -= 12;
+            if (rootMidi < 24) rootMidi = 24;
+            stopAllSound();
+            buildGrid();
+            if (phase === PH_PRACTICE) loadPracticeChord();
+            else loadQuizChord();
         }
     }
 };
 
-globalThis.onMidiMessageExternal = function (data) {
-    // Forward external MIDI to internal (for future use)
-};
+globalThis.onMidiMessageExternal = function (data) {};
 
 // ---------------------------------------------------------------------------
 // Init and tick
@@ -572,39 +620,62 @@ globalThis.init = function () {
     clearAllPads();
     clearButtons();
 
-    // Light up control buttons
-    move_midi_internal_send([0x00 << 4 | 0xB, 0xB0, 54, PAL_CUE]);  // Down
-    move_midi_internal_send([0x00 << 4 | 0xB, 0xB0, 55, PAL_CUE]);  // Up
-    move_midi_internal_send([0x00 << 4 | 0xB, 0xB0, 56, PAL_WRONG]); // Undo = reset
-    move_midi_internal_send([0x00 << 4 | 0xB, 0xB0, 85, PAL_CORRECT]); // Play = next
-
-    nextChord();
+    phase = PH_SPLASH;
+    phaseTimer = 520; // ~1.5 seconds
+    clear_screen();
+    print(2, 24, "Move Game!", 1);
 };
 
 globalThis.tick = function (deltaTime) {
-    // Audio — must run every tick
+    // Audio every tick
     if (soundingNotes.size > 0) {
         playAudioTick();
     } else {
         playSilenceTick();
     }
 
-    // Auto-advance after round complete
+    // Splash timer — redraw every tick so palette init doesn't blank it
+    if (phase === PH_SPLASH) {
+        clear_screen();
+        print(2, 24, "Move Game!", 1);
+        phaseTimer--;
+        if (phaseTimer <= 0) {
+            stage = 0;
+            startPractice();
+        }
+        return;
+    }
+
+    // Transition screen timer — redraw every tick
+    if (phase === PH_SCREEN) {
+        clear_screen();
+        print(2, 16, screenText1, 1);
+        if (screenText2) print(2, 36, screenText2, 1);
+        phaseTimer--;
+        if (phaseTimer <= 0 && afterScreenFn) {
+            afterScreenFn();
+        }
+        return;
+    }
+
+    // Redraw display every tick
+    if (phase === PH_PRACTICE) updatePracticeDisplay();
+    else if (phase === PH_QUIZ) updateQuizDisplay();
+
+    // Feedback timer after completing a chord
     if (roundComplete && feedbackTimer > 0) {
         feedbackTimer--;
         if (feedbackTimer === 0) {
             stopAllSound();
-            nextChord();
-        }
-    }
 
-    // Pulse animation for cue pads
-    if (!roundComplete) {
-        pulsePhase += 0.15;
-        if (Math.floor(pulsePhase * 2) % 20 === 0) {
-            for (const pn of targetPadNotes) {
-                if (!pressedPads[pn]) {
-                    setPadColor(pn, PAL_CUE);
+            if (phase === PH_PRACTICE) {
+                practiceIdx++;
+                loadPracticeChord();
+            } else if (phase === PH_QUIZ) {
+                if (quizScore >= 10) {
+                    onQuizDone();
+                } else {
+                    loadQuizChord();
                 }
             }
         }
