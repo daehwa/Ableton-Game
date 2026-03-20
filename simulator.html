@@ -37,6 +37,7 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
     font-size: 13px;
 }
 #buttons button:hover { background: #444; }
+.track-btn.active { background: #00c8b4; color: #003; }
 #pad-grid {
     display: grid;
     grid-template-columns: repeat(8, 72px);
@@ -69,8 +70,11 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
 <h1>Move Chord Trainer — Browser Simulator</h1>
 <canvas id="display" width="512" height="256"></canvas>
 <div id="buttons">
+    <button id="btn-track1" class="track-btn active">T1 Chords</button>
+    <button id="btn-track2" class="track-btn">T2 I-IV-V</button>
     <button id="btn-up">&#9650; Octave Up</button>
     <button id="btn-down">&#9660; Octave Down</button>
+    <button id="btn-play">&#9654; Drums</button>
 </div>
 <div id="pad-grid"></div>
 <div id="info">
@@ -78,7 +82,7 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
     Row 2 <b>Q W E R T Y U I</b> &nbsp;|&nbsp;
     Row 1 <b>A S D F G H J K</b> &nbsp;|&nbsp;
     Bottom <b>Z X C V B N M ,</b><br>
-    Arrow keys: &uarr; Octave Up &darr; Octave Down<br>
+    Arrow keys: &uarr; Octave Up &darr; Octave Down &nbsp;|&nbsp; <b>P</b> Toggle Drums<br>
     <br>Requires local server: <code>cd move-anything && python3 -m http.server</code>
 </div>
 
@@ -157,11 +161,25 @@ function updatePadUI() {
 }
 
 // --- Move MIDI stubs ---
+// Track button LED state
+const trackBtnState = {};
+
 window.move_midi_internal_send = function(data) {
     // Capture pad color changes: [0x09, 0x90, note, palette]
     if (data.length >= 4 && (data[0] & 0x0F) === 0x09 && data[1] === 0x90) {
         padColorState[data[2]] = data[3];
         updatePadUI();
+    }
+    // Capture button/CC LED changes: [0x0B, 0xB0, cc, palette]
+    if (data.length >= 4 && (data[0] & 0x0F) === 0x0B && data[1] === 0xB0) {
+        const cc = data[2];
+        const pal = data[3];
+        trackBtnState[cc] = pal;
+        // Update track button UI
+        const t1 = document.getElementById('btn-track1');
+        const t2 = document.getElementById('btn-track2');
+        if (t1) t1.classList.toggle('active', (trackBtnState[40] || 0) > 0);
+        if (t2) t2.classList.toggle('active', (trackBtnState[41] || 0) > 0);
     }
 };
 
@@ -253,6 +271,7 @@ document.addEventListener('keydown', function(e) {
     const k = e.key.toLowerCase();
     if (k === 'arrowup') { sendCC(55); return; }
     if (k === 'arrowdown') { sendCC(54); return; }
+    if (k === 'p') { sendCC(85); return; }
     const pad = keyToPad[k];
     if (pad !== undefined) {
         e.preventDefault();
@@ -266,8 +285,11 @@ document.addEventListener('keyup', function(e) {
     if (pad !== undefined) triggerPad(pad, false);
 });
 
+document.getElementById('btn-track1').addEventListener('click', function() { sendCC(40); });
+document.getElementById('btn-track2').addEventListener('click', function() { sendCC(41); });
 document.getElementById('btn-up').addEventListener('click', function() { sendCC(55); });
 document.getElementById('btn-down').addEventListener('click', function() { sendCC(54); });
+document.getElementById('btn-play').addEventListener('click', function() { sendCC(85); });
 
 // --- Init ---
 globalThis.init();
