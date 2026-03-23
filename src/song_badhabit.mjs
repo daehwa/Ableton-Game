@@ -29,7 +29,7 @@ export const song = {
     drumPatterns: [
         {
             name: "level 1",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 6, drum: HIHAT }, 
@@ -38,7 +38,7 @@ export const song = {
         },
         {
             name: "level 2",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 2, drum: HIHAT }, 
@@ -47,7 +47,7 @@ export const song = {
         },
         {
             name: "level 3",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 0, drum: HIHAT }, 
@@ -58,7 +58,7 @@ export const song = {
         },
         {
             name: "level 4",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 0, drum: HIHAT }, 
@@ -69,7 +69,7 @@ export const song = {
         },
         {
             name: "level 5",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 0, drum: HIHAT }, 
@@ -80,7 +80,7 @@ export const song = {
         },
         {
             name: "level 6",
-            bpm: 95,
+            bpm: 94,
             steps: 8,
             events: [
                 { step: 0, drum: HIHAT }, 

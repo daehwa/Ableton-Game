@@ -115,6 +115,13 @@ function clearAllPads() {
     for (let n = 16; n <= 31; n++) setPadColor(n, PAL_OFF);
 }
 
+function lightInstrumentRow() {
+    for (const dk of DRUM_KEYS) {
+        const zone = DRUM_ZONES[dk];
+        for (const pad of zone.pads) setPadColor(pad, zone.pal);
+    }
+}
+
 function clearButtons() {
     const buttons = [49, 50, 52, 54, 55, 56, 58, 60, 62, 63, 85, 86, 88, 118, 119];
     for (const cc of buttons) setButtonColor(cc, PAL_OFF);
@@ -157,8 +164,11 @@ for (const dk of DRUM_KEYS) {
     }
 }
 
-// Pads not assigned to any drum (row 1 middle: 76-81)
-// Left unlit / unused
+// Column index for each drum (maps GM note -> column on row 0)
+const DRUM_COL = {};
+DRUM_COL[GM_KICK] = 0; DRUM_COL[GM_SNARE] = 1; DRUM_COL[GM_HIHAT] = 2;
+DRUM_COL[GM_TOM_H] = 3; DRUM_COL[GM_TOM_M] = 4; DRUM_COL[GM_TOM_L] = 5;
+DRUM_COL[GM_CRASH] = 6; DRUM_COL[GM_RIDE] = 7;
 
 // Sequencer row color priority: kick > snare > crash > toms > hihat > ride
 const DRUM_PRIORITY = {};
@@ -320,11 +330,7 @@ function startFreeDrum() {
     phase = PH_FREE;
     clearAllPads();
     updateTrackLEDs();
-    // Light all drum zone pads with idle colors
-    for (const dk of DRUM_KEYS) {
-        const zone = DRUM_ZONES[dk];
-        for (const pad of zone.pads) setPadColor(pad, zone.pal);
-    }
+    lightInstrumentRow();
 }
 
 function startPractice() {
@@ -348,11 +354,8 @@ function startPractice() {
     updateTrackLEDs();
     cuedPadState = {};
     seqState = {};
-    // Show zone layout dimly
-    for (const dk of DRUM_KEYS) {
-        const zone = DRUM_ZONES[dk];
-        for (const pad of zone.pads) setPadColor(pad, PAL_IDLE);
-    }
+    fallingState = {};
+    lightInstrumentRow();
 }
 
 function startPlay() {
@@ -374,6 +377,8 @@ function startPlay() {
     updateTrackLEDs();
     cuedPadState = {};
     seqState = {};
+    fallingState = {};
+    lightInstrumentRow();
 }
 
 function showResults() {
@@ -407,6 +412,7 @@ function switchMode(mode) {
 // Track which pads/seq LEDs are already set to avoid redundant sends
 let cuedPadState = {};   // padNote -> paletteIndex currently shown
 let seqState = {};       // seqPad -> paletteIndex currently shown
+let fallingState = {};   // rows 1-3 pad -> paletteIndex for falling notes
 
 function setPadIfChanged(pad, pal) {
     if (cuedPadState[pad] !== pal) {
@@ -504,18 +510,40 @@ function tickPattern() {
         for (let s = 8; s < 16; s++) setSeqIfChanged(16 + s, PAL_OFF);
     }
 
-    // Light cue pads — only when first entering the cue window
+    // Falling notes — lights descend rows 3→2→1 toward row 0 (instrument pads)
+    // Divide CUE_LEAD_TICKS into 3 segments, one per row
+    const segment = CUE_LEAD_TICKS / 3;
+    const desired = {};  // pad -> palette for rows 1-3
     for (const pe of pendingEvents) {
-        if (pe.state !== "pending" || pe.cued) continue;
+        if (pe.state !== "pending") continue;
         const ticksUntil = pe.scheduledTick - globalTick;
-        if (ticksUntil <= CUE_LEAD_TICKS && ticksUntil >= -GOOD_TICKS) {
-            pe.cued = true;
-            const zone = DRUM_ZONES[pe.drum];
-            if (zone) {
-                for (const pad of zone.pads) {
-                    if (!padFlashes[pad]) setPadIfChanged(pad, zone.pal);
-                }
-            }
+        if (ticksUntil < 0 || ticksUntil > CUE_LEAD_TICKS) continue;
+        const col = DRUM_COL[pe.drum];
+        if (col === undefined) continue;
+        const zone = DRUM_ZONES[pe.drum];
+        if (!zone) continue;
+        let row;
+        if (ticksUntil > segment * 2) row = 3;
+        else if (ticksUntil > segment) row = 2;
+        else row = 1;
+        desired[68 + row * 8 + col] = zone.pal;
+    }
+    // Clear pads no longer needed
+    for (const padStr in fallingState) {
+        const pad = Number(padStr);
+        if (!desired[pad]) {
+            setPadColor(pad, PAL_OFF);
+            cuedPadState[pad] = PAL_OFF;
+            delete fallingState[pad];
+        }
+    }
+    // Light new/changed pads
+    for (const padStr in desired) {
+        const pad = Number(padStr);
+        if (fallingState[pad] !== desired[pad]) {
+            setPadColor(pad, desired[pad]);
+            cuedPadState[pad] = desired[pad];
+            fallingState[pad] = desired[pad];
         }
     }
 
@@ -535,7 +563,7 @@ function tickPattern() {
                 for (const pad of zone.pads) {
                     setPadColor(pad, PAL_MISS);
                     cuedPadState[pad] = PAL_MISS;
-                    padFlashes[pad] = { timer: FLASH_TICKS, restorePal: phase === PH_PRACTICE ? PAL_IDLE : PAL_OFF };
+                    padFlashes[pad] = { timer: FLASH_TICKS, restorePal: zone.pal };
                 }
             }
         }
@@ -613,12 +641,12 @@ function handleDrumPadPress(padNote, velocity) {
     if (combo > maxCombo) maxCombo = combo;
     feedbackTimer = FLASH_TICKS;
 
-    // Flash zone
+    // Flash zone — restore to instrument color since row 0 stays lit
     const zone = DRUM_ZONES[drumNote];
     if (zone) {
         for (const pad of zone.pads) {
             setPadColor(pad, flashPal);
-            padFlashes[pad] = { timer: FLASH_TICKS, restorePal: phase === PH_PRACTICE ? PAL_IDLE : PAL_OFF };
+            padFlashes[pad] = { timer: FLASH_TICKS, restorePal: zone.pal };
         }
     }
 }
