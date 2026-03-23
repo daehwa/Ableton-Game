@@ -291,7 +291,7 @@ let padFlashes = {};
 
 // Pattern loop tracking
 let loopCount = 0;
-const PLAY_LOOPS = 4;  // play mode ends after 4 loops
+const PLAY_LOOPS = 12;
 
 // ---------------------------------------------------------------------------
 // Track button LED management

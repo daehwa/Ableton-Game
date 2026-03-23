@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Move Rhythm Game — Simulator</title>
+<title>Edu Game: Rhythm Game (web ver.)</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -492,8 +492,21 @@ document.getElementById('btn-up').addEventListener('click', function() { sendCC(
 document.getElementById('btn-down').addEventListener('click', function() { sendCC(54); });
 document.getElementById('btn-restart').addEventListener('click', function() { sendCC(85); });
 
-// --- Init ---
-globalThis.init();
+// --- Wait for MP3 to load, then init ---
+function waitForMP3ThenStart() {
+    if (!mp3Buffer) {
+        dCtx.fillStyle = '#000';
+        dCtx.fillRect(0, 0, 512, 256);
+        dCtx.fillStyle = '#fff';
+        dCtx.font = '44px monospace';
+        dCtx.fillText('Loading audio...', 40, 140);
+        requestAnimationFrame(waitForMP3ThenStart);
+        return;
+    }
+    globalThis.init();
+    requestAnimationFrame(animLoop);
+}
+waitForMP3ThenStart();
 
 // --- Tick loop matching Move's ~344 Hz (44100/128) ---
 const MOVE_TICK_MS = 1000 / (44100 / 128);
@@ -513,7 +526,6 @@ function animLoop(timestamp) {
     }
     requestAnimationFrame(animLoop);
 }
-requestAnimationFrame(animLoop);
 </script>
 </body>
 </html>
