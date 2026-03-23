@@ -137,9 +137,9 @@ function clearButtons() {
 const GM_KICK  = 36;
 const GM_SNARE = 38;
 const GM_HIHAT = 42;
-const GM_TOM_H = 50;  // high tom
-const GM_TOM_M = 47;  // mid tom
-const GM_TOM_L = 43;  // floor tom
+const GM_TOM_H = 47;  // high tom
+const GM_TOM_M = 43;  // mid tom
+const GM_TOM_L = 41;  // floor tom
 const GM_CRASH = 49;
 const GM_RIDE  = 51;
 
