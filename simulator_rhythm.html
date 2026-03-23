@@ -130,20 +130,16 @@ window.set_int16 = function() {};
 window.get_int16 = function() { return 0; };
 window.set_pixel = function() {};
 
-// --- Drum zone labels for pad grid ---
+// --- Drum zone labels for pad grid (all on bottom row 68-75) ---
 const DRUM_LABELS = {};
-// Row 0: Kick
-for (let c = 0; c < 4; c++) DRUM_LABELS[68 + c] = 'Kick';
-// Row 1: Floor Tom (82-83), rest empty
-DRUM_LABELS[82] = 'FlrTom'; DRUM_LABELS[83] = 'FlrTom';
-// Row 2: Snare (84-87), HiTom (88-89), MidTom (90-91)
-for (let c = 0; c < 4; c++) DRUM_LABELS[84 + c] = 'Snare';
-DRUM_LABELS[88] = 'HiTom'; DRUM_LABELS[89] = 'HiTom';
-DRUM_LABELS[90] = 'MidTom'; DRUM_LABELS[91] = 'MidTom';
-// Row 3: Crash (92-93), Ride (94-95), HiHat (96-99)
-DRUM_LABELS[92] = 'Crash'; DRUM_LABELS[93] = 'Crash';
-DRUM_LABELS[94] = 'Ride'; DRUM_LABELS[95] = 'Ride';
-for (let c = 4; c < 8; c++) DRUM_LABELS[92 + c] = 'HiHat';
+DRUM_LABELS[68] = 'Kick';
+DRUM_LABELS[69] = 'Snare';
+DRUM_LABELS[70] = 'HiHat';
+DRUM_LABELS[71] = 'HiTom';
+DRUM_LABELS[72] = 'MidTom';
+DRUM_LABELS[73] = 'FlrTom';
+DRUM_LABELS[74] = 'Crash';
+DRUM_LABELS[75] = 'Ride';
 
 // --- Pad grid UI ---
 const KEY_LABELS = [
@@ -353,16 +349,78 @@ function playDrumSound(midiNote) {
     }
 }
 
-// Intercept external MIDI for drum audio
+// --- MP3 playback (syncs with game start/stop) ---
+let mp3Buffer = null;
+let mp3Source = null;
+let mp3Playing = false;
+let mp3StartTime = 0;
+
+// Pre-load the MP3 file
+function loadMP3() {
+    fetch('src/Bad-Habit_Arya-Yildirim.mp3')
+        .then(r => r.arrayBuffer())
+        .then(buf => {
+            ensureAudio();
+            return audioCtx.decodeAudioData(buf);
+        })
+        .then(decoded => {
+            mp3Buffer = decoded;
+            console.log('MP3 loaded: ' + decoded.duration.toFixed(1) + 's');
+        })
+        .catch(e => console.warn('MP3 load failed:', e));
+}
+
+function startMP3() {
+    if (!mp3Buffer) { console.warn('MP3 not loaded yet'); return; }
+    stopMP3();
+    ensureAudio();
+    mp3Source = audioCtx.createBufferSource();
+    mp3Source.buffer = mp3Buffer;
+    // Lower volume so drums are audible on top
+    const gain = audioCtx.createGain();
+    gain.gain.value = 0.5;
+    mp3Source.connect(gain);
+    gain.connect(audioCtx.destination);
+    mp3Source.loop = true;
+    mp3Source.start();
+    mp3Playing = true;
+    mp3StartTime = audioCtx.currentTime;
+    console.log('MP3 playing');
+}
+
+function stopMP3() {
+    if (mp3Source) {
+        try { mp3Source.stop(); } catch(e) {}
+        mp3Source = null;
+    }
+    mp3Playing = false;
+}
+
+// Intercept external MIDI for drum audio + transport
 window.move_midi_external_send = function(data) {
     if (!data || data.length < 4) return;
     const status = data[1];
     const midi = data[2];
+
+    // MIDI Start (0xFA) — start MP3 playback
+    if (status === 0xFA) {
+        startMP3();
+        return;
+    }
+    // MIDI Stop (0xFC) — stop MP3 playback
+    if (status === 0xFC) {
+        stopMP3();
+        return;
+    }
+
     // Channel 10 note on (0x99) or channel 1 note on (0x90)
     if ((status === 0x99 || status === 0x90) && data[3] > 0) {
         playDrumSound(midi);
     }
 };
+
+// Load MP3 on page load
+loadMP3();
 
 // Placeholder — module script sets this up
 window._simTriggerPad = function() {};

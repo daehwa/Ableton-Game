@@ -1,5 +1,5 @@
 import { clamp } from "./math_helpers.mjs";
-import { song } from "./song_rock.mjs";  // ← change to song_pop.mjs or song_blues.mjs
+import { song } from "./song_badhabit.mjs";  // ← change to song_rock.mjs, song_pop.mjs, etc.
 
 /*
   Rhythm Game for Ableton Move — runs via Move Anything.
@@ -137,14 +137,16 @@ const GM_CRASH = 49;
 const GM_RIDE  = 51;
 
 const DRUM_ZONES = {};
-DRUM_ZONES[GM_KICK]  = { name: "Kick",   pads: [68, 69, 70, 71], pal: PAL_KICK };
-DRUM_ZONES[GM_SNARE] = { name: "Snare",  pads: [84, 85, 86, 87], pal: PAL_SNARE };
-DRUM_ZONES[GM_HIHAT] = { name: "HiHat",  pads: [96, 97, 98, 99], pal: PAL_HIHAT };
-DRUM_ZONES[GM_TOM_H] = { name: "HiTom",  pads: [88, 89],         pal: PAL_TOM };
-DRUM_ZONES[GM_TOM_M] = { name: "MidTom", pads: [90, 91],         pal: PAL_TOM };
-DRUM_ZONES[GM_TOM_L] = { name: "FlrTom", pads: [82, 83],         pal: PAL_TOM };
-DRUM_ZONES[GM_CRASH] = { name: "Crash",  pads: [92, 93],         pal: PAL_CYMBAL };
-DRUM_ZONES[GM_RIDE]  = { name: "Ride",   pads: [94, 95],         pal: PAL_CYMBAL };
+// All 8 instruments on bottom row (68-75), left to right
+// Row 0: Kick Snare HiHat HiTom MidTom FlrTom Crash Ride
+DRUM_ZONES[GM_KICK]  = { name: "Kick",   pads: [68], pal: PAL_KICK };
+DRUM_ZONES[GM_SNARE] = { name: "Snare",  pads: [69], pal: PAL_SNARE };
+DRUM_ZONES[GM_HIHAT] = { name: "HiHat",  pads: [70], pal: PAL_HIHAT };
+DRUM_ZONES[GM_TOM_H] = { name: "HiTom",  pads: [71], pal: PAL_TOM };
+DRUM_ZONES[GM_TOM_M] = { name: "MidTom", pads: [72], pal: PAL_TOM };
+DRUM_ZONES[GM_TOM_L] = { name: "FlrTom", pads: [73], pal: PAL_TOM };
+DRUM_ZONES[GM_CRASH] = { name: "Crash",  pads: [74], pal: PAL_CYMBAL };
+DRUM_ZONES[GM_RIDE]  = { name: "Ride",   pads: [75], pal: PAL_CYMBAL };
 
 // Reverse map: pad note -> GM drum note
 const PAD_TO_DRUM = {};
@@ -157,6 +159,13 @@ for (const dk of DRUM_KEYS) {
 
 // Pads not assigned to any drum (row 1 middle: 76-81)
 // Left unlit / unused
+
+// Sequencer row color priority: kick > snare > crash > toms > hihat > ride
+const DRUM_PRIORITY = {};
+DRUM_PRIORITY[GM_KICK] = 6; DRUM_PRIORITY[GM_SNARE] = 5;
+DRUM_PRIORITY[GM_CRASH] = 4; DRUM_PRIORITY[GM_TOM_H] = 3;
+DRUM_PRIORITY[GM_TOM_M] = 3; DRUM_PRIORITY[GM_TOM_L] = 3;
+DRUM_PRIORITY[GM_HIHAT] = 2; DRUM_PRIORITY[GM_RIDE] = 1;
 
 // ---------------------------------------------------------------------------
 // Timing constants
@@ -207,6 +216,20 @@ function drumNoteOn(note, vel) {
 
 function drumNoteOff(note) {
     move_midi_external_send([0x28, 0x89, note, 0]);
+}
+
+// ---------------------------------------------------------------------------
+// MIDI transport — sync Ableton playback with Move
+// ---------------------------------------------------------------------------
+
+// SysEx real-time: Start (FA), Stop (FC)
+// These are single-byte system real-time messages sent on cable 2
+function sendMidiStart() {
+    move_midi_external_send([0x2F, 0xFA, 0x00, 0x00]);
+}
+
+function sendMidiStop() {
+    move_midi_external_send([0x2F, 0xFC, 0x00, 0x00]);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,9 +329,12 @@ function startFreeDrum() {
 
 function startPractice() {
     phase = PH_PRACTICE;
+    sendMidiStop();
+    sendMidiStart();  // sync Ableton playback
     const pat = PATTERNS[patternIdx];
     // Slow down to 75% for practice
-    ticksPerStep = computeTicksPerStep(Math.round(pat.bpm * 0.75));
+    // ticksPerStep = computeTicksPerStep(Math.round(pat.bpm * 0.75));
+    ticksPerStep = computeTicksPerStep(Math.round(pat.bpm));
     patternStartTick = globalTick;
     lastStep = -1;
     loopCount = 0;
@@ -331,6 +357,8 @@ function startPractice() {
 
 function startPlay() {
     phase = PH_PLAY;
+    sendMidiStop();
+    sendMidiStart();  // sync Ableton playback
     const pat = PATTERNS[patternIdx];
     ticksPerStep = computeTicksPerStep(pat.bpm);
     patternStartTick = globalTick;
@@ -350,6 +378,7 @@ function startPlay() {
 
 function showResults() {
     phase = PH_SCREEN;
+    sendMidiStop();  // stop Ableton playback
     phaseTimer = 999999;  // stays until button press
     afterScreenFn = null;
     clearAllPads();
@@ -451,16 +480,25 @@ function tickPattern() {
         }
 
         // Update sequencer row (only on step change)
+        // Color matches the primary instrument on that step
         for (let s = 0; s < 8; s++) {
             const seqPad = 16 + s;
-            if (s === currentStep) {
-                setSeqIfChanged(seqPad, PAL_BEAT);
-            } else {
-                let hasEvent = false;
-                for (const ev of pat.events) {
-                    if (ev.step === s) { hasEvent = true; break; }
+            let stepPal = PAL_OFF;
+            let bestPri = -1;
+            for (const ev of pat.events) {
+                if (ev.step === s) {
+                    const pri = DRUM_PRIORITY[ev.drum] || 0;
+                    if (pri > bestPri) {
+                        bestPri = pri;
+                        const zone = DRUM_ZONES[ev.drum];
+                        if (zone) stepPal = zone.pal;
+                    }
                 }
-                setSeqIfChanged(seqPad, hasEvent ? PAL_IDLE : PAL_OFF);
+            }
+            if (s === currentStep) {
+                setSeqIfChanged(seqPad, PAL_PERFECT);
+            } else {
+                setSeqIfChanged(seqPad, stepPal || PAL_OFF);
             }
         }
         for (let s = 8; s < 16; s++) setSeqIfChanged(16 + s, PAL_OFF);
@@ -597,8 +635,9 @@ function handleDrumPadRelease(padNote) {
 function updatePlayDisplay() {
     clear_screen();
     const pat = PATTERNS[patternIdx];
-    const bpmShow = phase === PH_PRACTICE ? Math.round(pat.bpm * 0.75) : pat.bpm;
-    print(2, 0, pat.name + " " + bpmShow, 1);
+    // const bpmShow = phase === PH_PRACTICE ? Math.round(pat.bpm * 0.75) : pat.bpm;
+    const bpmShow = pat.bpm;
+    print(2, 0, pat.name + " " + bpmShow + " bpm", 1);
     print(2, 18, "Score:" + score + " x" + combo, 1);
     if (feedbackTimer > 0) {
         print(2, 38, feedbackText, 1);
