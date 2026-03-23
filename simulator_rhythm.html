@@ -3,20 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <title>Edu Game: Rhythm Game (web ver.)</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎶</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
-    background: #1a1a2e;
-    color: #fff;
+    background: #f5f5f0;
+    color: #333;
     font-family: 'Courier New', monospace;
     display: flex;
     flex-direction: column;
     align-items: center;
     padding: 20px;
 }
-h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
+h1 { font-size: 16px; color: #555; margin-bottom: 12px; }
 #display {
-    border: 2px solid #555;
+    border: 2px solid #ccc;
     background: #000;
     image-rendering: pixelated;
     margin-bottom: 16px;
@@ -29,16 +30,16 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
     justify-content: center;
 }
 #buttons button {
-    background: #333;
-    color: #ccc;
-    border: 1px solid #555;
+    background: #e8e8e4;
+    color: #444;
+    border: 1px solid #ccc;
     padding: 6px 14px;
     border-radius: 4px;
     cursor: pointer;
     font-family: monospace;
     font-size: 13px;
 }
-#buttons button:hover { background: #444; }
+#buttons button:hover { background: #ddd; }
 .track-btn.active-practice { background: #00e050; color: #003; }
 .track-btn.active-play { background: #ff2828; color: #fff; }
 .track-btn.active-free { background: #ffdc00; color: #333; }
@@ -51,8 +52,8 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
     width: 36px;
     height: 24px;
     border-radius: 4px;
-    background: #222;
-    border: 1px solid #333;
+    background: #ddd;
+    border: 1px solid #ccc;
 }
 #pad-grid {
     display: grid;
@@ -69,7 +70,7 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
     justify-content: center;
     cursor: pointer;
     user-select: none;
-    border: 1px solid #333;
+    border: 1px solid #ccc;
     transition: background-color 0.05s;
     font-size: 11px;
 }
@@ -77,7 +78,7 @@ h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
 .pad .label { font-size: 9px; color: #888; margin-top: 2px; }
 .pad.pressed { transform: scale(0.93); }
 #info {
-    color: #555;
+    color: #888;
     font-size: 11px;
     text-align: center;
     line-height: 1.6;
@@ -151,7 +152,7 @@ const KEY_LABELS = [
 
 // Extended palette matching rhythm_game.js
 const PALETTE_CSS = {
-    0:  { bg: '#222',    fg: '#555' },    // OFF
+    0:  { bg: '#e0e0dc', fg: '#999' },    // OFF
     1:  { bg: '#ff2828', fg: '#fff' },    // KICK - red
     2:  { bg: '#00e050', fg: '#003' },    // SNARE - green
     3:  { bg: '#ffdc00', fg: '#333' },    // HIHAT - yellow
@@ -160,7 +161,7 @@ const PALETTE_CSS = {
     6:  { bg: '#ffffff', fg: '#000' },    // PERFECT - white
     7:  { bg: '#00c864', fg: '#003' },    // GOOD - green
     8:  { bg: '#c80000', fg: '#fff' },    // MISS - dark red
-    9:  { bg: '#2a2a2a', fg: '#666' },    // IDLE - dim gray
+    9:  { bg: '#d0d0cc', fg: '#888' },    // IDLE - dim
     10: { bg: '#c87800', fg: '#fff' },    // BEAT marker - orange
 };
 
@@ -177,8 +178,8 @@ for (let r = 3; r >= 0; r--) {
         const label = DRUM_LABELS[padNote] || '';
         el.innerHTML = '<span class="key">' + KEY_LABELS[r][c] + '</span>' +
                        (label ? '<span class="label">' + label + '</span>' : '');
-        el.style.background = '#222';
-        el.style.color = '#555';
+        el.style.background = '#e0e0dc';
+        el.style.color = '#999';
         el.addEventListener('mousedown', function(e) {
             e.preventDefault();
             window._simTriggerPad(padNote, true);
