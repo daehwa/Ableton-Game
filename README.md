@@ -4,7 +4,7 @@ This is the part of (in progress) final project of Design Educational Game (0541
 
 # Demo
 
-We can approximate our core game mechanism on keyboard based interaction without Ableton Move. Try our demo in this [link](http://daehwakim.com/edu-game/rhythm-game). (Still in progress)
+We can approximate our core game mechanism on keyboard based interaction without Ableton Move. Try our demo in this [link](http://daehwakim.com/edu-game/rhythm). (Still in progress)
 
 ![](image/browser_ver.gif)
 
