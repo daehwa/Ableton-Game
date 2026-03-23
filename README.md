@@ -4,9 +4,13 @@ This is the part of (in progress) final project of Design Educational Game (0541
 
 # Demo
 
-Our core game mechanism is valid on keyboard based interaction without Ableton Move (though it's cooler :)..). Try the demo in this [link](http://daehwakim.com/edu-game/rhythm-game).
+We can approximate our core game mechanism on keyboard based interaction without Ableton Move. Try our demo in this [link](http://daehwakim.com/edu-game/rhythm-game). (Still in progress)
 
+![](image/browser_ver.gif)
 
+# Contributors
+
+Daehwa Kim, Yujia Liu, Annabelle Chow, Leo Luan
 
 # Credit
-The source code is largely based on the amazing repository [move-anything](https://github.com/bobbydigitales/move-anything) by [bobbydigitales](https://github.com/bobbydigitales).
+The source code is largely based on the amazing open source repository [move-anything](https://github.com/bobbydigitales/move-anything) by [bobbydigitales](https://github.com/bobbydigitales).
