@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Move Rhythm Game — Simulator</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+    background: #1a1a2e;
+    color: #fff;
+    font-family: 'Courier New', monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px;
+}
+h1 { font-size: 16px; color: #888; margin-bottom: 12px; }
+#display {
+    border: 2px solid #555;
+    background: #000;
+    image-rendering: pixelated;
+    margin-bottom: 16px;
+}
+#buttons {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+#buttons button {
+    background: #333;
+    color: #ccc;
+    border: 1px solid #555;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 13px;
+}
+#buttons button:hover { background: #444; }
+.track-btn.active-practice { background: #00e050; color: #003; }
+.track-btn.active-play { background: #ff2828; color: #fff; }
+.track-btn.active-free { background: #ffdc00; color: #333; }
+#seq-row {
+    display: flex;
+    gap: 3px;
+    margin-bottom: 8px;
+}
+#seq-row .seq-pad {
+    width: 36px;
+    height: 24px;
+    border-radius: 4px;
+    background: #222;
+    border: 1px solid #333;
+}
+#pad-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 72px);
+    grid-template-rows: repeat(4, 72px);
+    gap: 4px;
+    margin-bottom: 16px;
+}
+.pad {
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    user-select: none;
+    border: 1px solid #333;
+    transition: background-color 0.05s;
+    font-size: 11px;
+}
+.pad .key { font-size: 18px; font-weight: bold; }
+.pad .label { font-size: 9px; color: #888; margin-top: 2px; }
+.pad.pressed { transform: scale(0.93); }
+#info {
+    color: #555;
+    font-size: 11px;
+    text-align: center;
+    line-height: 1.6;
+}
+</style>
+</head>
+<body>
+<h1>Move Rhythm Game — Browser Simulator</h1>
+<canvas id="display" width="512" height="256"></canvas>
+<div id="buttons">
+    <button id="btn-practice" class="track-btn active-practice">T1 Practice</button>
+    <button id="btn-play" class="track-btn">T2 Play</button>
+    <button id="btn-free" class="track-btn">T3 Free Drum</button>
+    <button id="btn-up">&#9650; Next Pattern</button>
+    <button id="btn-down">&#9660; Prev Pattern</button>
+    <button id="btn-restart">&#9654; Restart</button>
+</div>
+<div id="seq-row"></div>
+<div id="pad-grid"></div>
+<div id="info">
+    Top row <b>1 2 3 4 5 6 7 8</b> = HiHat/Cymbals &nbsp;|&nbsp;
+    Row 2 <b>Q W E R T Y U I</b> = Snare/Toms<br>
+    Row 1 <b>A S D F G H J K</b> = Floor Tom &nbsp;|&nbsp;
+    Bottom <b>Z X C V B N M ,</b> = Kick<br>
+    Arrow &uarr;/&darr; = switch pattern &nbsp;|&nbsp; <b>P</b> = restart<br>
+    <br>Requires local server: <code>cd move-anything && python3 -m http.server</code>
+</div>
+
+<!-- ================================================================
+     Define Move API stubs BEFORE the module import.
+     ================================================================ -->
+<script>
+// --- Canvas display (128x64 scaled 4x) ---
+const dCanvas = document.getElementById('display');
+const dCtx = dCanvas.getContext('2d');
+dCtx.imageSmoothingEnabled = false;
+
+window.clear_screen = function() {
+    dCtx.fillStyle = '#000';
+    dCtx.fillRect(0, 0, 512, 256);
+};
+
+window.print = function(x, y, str, color) {
+    dCtx.fillStyle = color === 1 ? '#fff' : '#000';
+    dCtx.font = '44px monospace';
+    dCtx.fillText(String(str), x * 4, (y + 10) * 4);
+};
+
+window.set_int16 = function() {};
+window.get_int16 = function() { return 0; };
+window.set_pixel = function() {};
+
+// --- Drum zone labels for pad grid ---
+const DRUM_LABELS = {};
+// Row 0: Kick
+for (let c = 0; c < 4; c++) DRUM_LABELS[68 + c] = 'Kick';
+// Row 1: Floor Tom (82-83), rest empty
+DRUM_LABELS[82] = 'FlrTom'; DRUM_LABELS[83] = 'FlrTom';
+// Row 2: Snare (84-87), HiTom (88-89), MidTom (90-91)
+for (let c = 0; c < 4; c++) DRUM_LABELS[84 + c] = 'Snare';
+DRUM_LABELS[88] = 'HiTom'; DRUM_LABELS[89] = 'HiTom';
+DRUM_LABELS[90] = 'MidTom'; DRUM_LABELS[91] = 'MidTom';
+// Row 3: Crash (92-93), Ride (94-95), HiHat (96-99)
+DRUM_LABELS[92] = 'Crash'; DRUM_LABELS[93] = 'Crash';
+DRUM_LABELS[94] = 'Ride'; DRUM_LABELS[95] = 'Ride';
+for (let c = 4; c < 8; c++) DRUM_LABELS[92 + c] = 'HiHat';
+
+// --- Pad grid UI ---
+const KEY_LABELS = [
+    ['Z','X','C','V','B','N','M',','],
+    ['A','S','D','F','G','H','J','K'],
+    ['Q','W','E','R','T','Y','U','I'],
+    ['1','2','3','4','5','6','7','8'],
+];
+
+// Extended palette matching rhythm_game.js
+const PALETTE_CSS = {
+    0:  { bg: '#222',    fg: '#555' },    // OFF
+    1:  { bg: '#ff2828', fg: '#fff' },    // KICK - red
+    2:  { bg: '#00e050', fg: '#003' },    // SNARE - green
+    3:  { bg: '#ffdc00', fg: '#333' },    // HIHAT - yellow
+    4:  { bg: '#2850ff', fg: '#fff' },    // TOM - blue
+    5:  { bg: '#00c8c8', fg: '#003' },    // CYMBAL - cyan
+    6:  { bg: '#ffffff', fg: '#000' },    // PERFECT - white
+    7:  { bg: '#00c864', fg: '#003' },    // GOOD - green
+    8:  { bg: '#c80000', fg: '#fff' },    // MISS - dark red
+    9:  { bg: '#2a2a2a', fg: '#666' },    // IDLE - dim gray
+    10: { bg: '#c87800', fg: '#fff' },    // BEAT marker - orange
+};
+
+const padElements = {};
+const padColorState = {};
+const padGridEl = document.getElementById('pad-grid');
+
+// Build grid (top row first visually = row 3)
+for (let r = 3; r >= 0; r--) {
+    for (let c = 0; c < 8; c++) {
+        const padNote = 68 + r * 8 + c;
+        const el = document.createElement('div');
+        el.className = 'pad';
+        const label = DRUM_LABELS[padNote] || '';
+        el.innerHTML = '<span class="key">' + KEY_LABELS[r][c] + '</span>' +
+                       (label ? '<span class="label">' + label + '</span>' : '');
+        el.style.background = '#222';
+        el.style.color = '#555';
+        el.addEventListener('mousedown', function(e) {
+            e.preventDefault();
+            window._simTriggerPad(padNote, true);
+        });
+        el.addEventListener('mouseup', function() { window._simTriggerPad(padNote, false); });
+        el.addEventListener('mouseleave', function() { window._simTriggerPad(padNote, false); });
+        padGridEl.appendChild(el);
+        padElements[padNote] = el;
+        padColorState[padNote] = 0;
+    }
+}
+
+// --- Sequencer row UI (notes 16-31, first 8 used) ---
+const seqRowEl = document.getElementById('seq-row');
+const seqElements = {};
+const seqColorState = {};
+for (let i = 0; i < 16; i++) {
+    const seqNote = 16 + i;
+    const el = document.createElement('div');
+    el.className = 'seq-pad';
+    seqRowEl.appendChild(el);
+    seqElements[seqNote] = el;
+    seqColorState[seqNote] = 0;
+}
+
+function updatePadUI() {
+    for (let n = 68; n <= 99; n++) {
+        const pal = padColorState[n] || 0;
+        const style = PALETTE_CSS[pal] || PALETTE_CSS[0];
+        padElements[n].style.background = style.bg;
+        padElements[n].style.color = style.fg;
+    }
+    // Sequencer row
+    for (let n = 16; n <= 31; n++) {
+        const pal = seqColorState[n] || 0;
+        const style = PALETTE_CSS[pal] || PALETTE_CSS[0];
+        seqElements[n].style.background = style.bg;
+    }
+}
+
+// --- Move MIDI stubs ---
+const trackBtnState = {};
+
+window.move_midi_internal_send = function(data) {
+    // Pad color changes: [0x09, 0x90, note, palette]
+    if (data.length >= 4 && (data[0] & 0x0F) === 0x09 && data[1] === 0x90) {
+        const note = data[2];
+        const pal = data[3];
+        if (note >= 68 && note <= 99) {
+            padColorState[note] = pal;
+        } else if (note >= 16 && note <= 31) {
+            seqColorState[note] = pal;
+        }
+        updatePadUI();
+    }
+    // Button/CC LED changes: [0x0B, 0xB0, cc, palette]
+    if (data.length >= 4 && (data[0] & 0x0F) === 0x0B && data[1] === 0xB0) {
+        const cc = data[2];
+        const pal = data[3];
+        trackBtnState[cc] = pal;
+        const btnP = document.getElementById('btn-practice');
+        const btnL = document.getElementById('btn-play');
+        const btnF = document.getElementById('btn-free');
+        if (btnP) {
+            btnP.classList.toggle('active-practice', (trackBtnState[40] || 0) > 0);
+        }
+        if (btnL) {
+            btnL.classList.toggle('active-play', (trackBtnState[41] || 0) > 0);
+        }
+        if (btnF) {
+            btnF.classList.toggle('active-free', (trackBtnState[42] || 0) > 0);
+        }
+    }
+};
+
+// --- Web Audio for drum sounds ---
+let audioCtx = null;
+
+function ensureAudio() {
+    if (!audioCtx) audioCtx = new AudioContext();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+// Simple drum synthesis for simulator
+function playDrumSound(midiNote) {
+    ensureAudio();
+
+    if (midiNote === 36) {
+        // Kick — low sine with pitch decay
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(150, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.25);
+        gain.gain.setValueAtTime(0.7, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.5);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+    } else if (midiNote === 38) {
+        // Snare — noise burst + tone
+        const bufSize = audioCtx.sampleRate * 0.25;
+        const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buf;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.25);
+        noise.connect(gain); gain.connect(audioCtx.destination);
+        noise.start(); noise.stop(audioCtx.currentTime + 0.25);
+        // Tone body
+        const osc = audioCtx.createOscillator();
+        const g2 = audioCtx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = 180;
+        g2.gain.setValueAtTime(0.25, audioCtx.currentTime);
+        g2.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.15);
+        osc.connect(g2); g2.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+    } else if (midiNote === 42 || midiNote === 46) {
+        // Hi-hat — filtered noise
+        const dur = midiNote === 46 ? 0.3 : 0.1;
+        const bufSize = audioCtx.sampleRate * dur;
+        const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buf;
+        const hp = audioCtx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 7000;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        noise.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+        noise.start(); noise.stop(audioCtx.currentTime + dur);
+    } else if (midiNote === 49 || midiNote === 51) {
+        // Crash/Ride — longer noise
+        const dur = midiNote === 49 ? 1.2 : 0.8;
+        const bufSize = audioCtx.sampleRate * dur;
+        const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+        const noise = audioCtx.createBufferSource();
+        noise.buffer = buf;
+        const hp = audioCtx.createBiquadFilter();
+        hp.type = 'highpass';
+        hp.frequency.value = 5000;
+        const gain = audioCtx.createGain();
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        noise.connect(hp); hp.connect(gain); gain.connect(audioCtx.destination);
+        noise.start(); noise.stop(audioCtx.currentTime + dur);
+    } else {
+        // Toms — sine with pitch decay
+        const pitchMap = { 50: 200, 47: 150, 43: 100 };
+        const freq = pitchMap[midiNote] || 120;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(freq * 0.5, audioCtx.currentTime + 0.3);
+        gain.gain.setValueAtTime(0.35, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.45);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.45);
+    }
+}
+
+// Intercept external MIDI for drum audio
+window.move_midi_external_send = function(data) {
+    if (!data || data.length < 4) return;
+    const status = data[1];
+    const midi = data[2];
+    // Channel 10 note on (0x99) or channel 1 note on (0x90)
+    if ((status === 0x99 || status === 0x90) && data[3] > 0) {
+        playDrumSound(midi);
+    }
+};
+
+// Placeholder — module script sets this up
+window._simTriggerPad = function() {};
+</script>
+
+<!-- ================================================================
+     Import rhythm_game.js as a module.
+     ================================================================ -->
+<script type="module">
+import './src/rhythm_game.js';
+
+// --- Keyboard → pad mapping ---
+const KEY_ROWS = [
+    ['z','x','c','v','b','n','m',','],
+    ['a','s','d','f','g','h','j','k'],
+    ['q','w','e','r','t','y','u','i'],
+    ['1','2','3','4','5','6','7','8'],
+];
+const keyToPad = {};
+for (let r = 0; r < 4; r++) {
+    for (let c = 0; c < 8; c++) {
+        keyToPad[KEY_ROWS[r][c]] = 68 + r * 8 + c;
+    }
+}
+
+const keysDown = {};
+
+function triggerPad(padNote, down) {
+    if (down && !keysDown[padNote]) {
+        keysDown[padNote] = true;
+        if (padElements[padNote]) padElements[padNote].classList.add('pressed');
+        globalThis.onMidiMessageInternal([0x90, padNote, 127]);
+    } else if (!down && keysDown[padNote]) {
+        delete keysDown[padNote];
+        if (padElements[padNote]) padElements[padNote].classList.remove('pressed');
+        globalThis.onMidiMessageInternal([0x80, padNote, 0]);
+    }
+}
+
+window._simTriggerPad = triggerPad;
+
+function sendCC(cc) {
+    globalThis.onMidiMessageInternal([0xB0, cc, 127]);
+}
+
+document.addEventListener('keydown', function(e) {
+    if (e.repeat) return;
+    const k = e.key.toLowerCase();
+    if (k === 'arrowup') { sendCC(55); return; }
+    if (k === 'arrowdown') { sendCC(54); return; }
+    if (k === 'p') { sendCC(85); return; }
+    const pad = keyToPad[k];
+    if (pad !== undefined) {
+        e.preventDefault();
+        triggerPad(pad, true);
+    }
+});
+
+document.addEventListener('keyup', function(e) {
+    const k = e.key.toLowerCase();
+    const pad = keyToPad[k];
+    if (pad !== undefined) triggerPad(pad, false);
+});
+
+document.getElementById('btn-practice').addEventListener('click', function() { sendCC(40); });
+document.getElementById('btn-play').addEventListener('click', function() { sendCC(41); });
+document.getElementById('btn-free').addEventListener('click', function() { sendCC(42); });
+document.getElementById('btn-up').addEventListener('click', function() { sendCC(55); });
+document.getElementById('btn-down').addEventListener('click', function() { sendCC(54); });
+document.getElementById('btn-restart').addEventListener('click', function() { sendCC(85); });
+
+// --- Init ---
+globalThis.init();
+
+// --- Tick loop matching Move's ~344 Hz (44100/128) ---
+const MOVE_TICK_MS = 1000 / (44100 / 128);
+let lastTime = 0;
+let accumulator = 0;
+
+function animLoop(timestamp) {
+    if (lastTime === 0) lastTime = timestamp;
+    accumulator += timestamp - lastTime;
+    lastTime = timestamp;
+
+    if (accumulator > 50) accumulator = 50;
+
+    while (accumulator >= MOVE_TICK_MS) {
+        globalThis.tick(MOVE_TICK_MS);
+        accumulator -= MOVE_TICK_MS;
+    }
+    requestAnimationFrame(animLoop);
+}
+requestAnimationFrame(animLoop);
+</script>
+</body>
+</html>

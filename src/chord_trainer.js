@@ -1,4 +1,5 @@
 import { clamp } from "./math_helpers.mjs";
+import { song } from "./song_rock.mjs";  // ← change to song_pop.mjs or song_blues.mjs
 
 /*
   Chord Trainer for Ableton Move — runs via Move Anything.
@@ -343,39 +344,30 @@ let knobVolume = 100; // default volume (0-127)
 // Drum sequencer — sends MIDI drums to Ableton on channel 10
 // ---------------------------------------------------------------------------
 
-// GM drum notes
-const DRUM_KICK = 36;
-const DRUM_SNARE = 38;
-const DRUM_HIHAT = 42;
-
-// 120 BPM, 8th notes: tick interval = 44100 / 128 / (120 * 2 / 60) ≈ 86 ticks per 8th
-const DRUM_BPM = 120;
+// Drum sequencer — uses first drum pattern from song file
 const TICKS_PER_SEC = 44100 / 128;
-const TICKS_PER_8TH = Math.round(TICKS_PER_SEC / (DRUM_BPM * 2 / 60));
 let drumTick = 0;
-let drumStep = 0; // 0-7 (8 eighth notes per bar)
+let drumStep = 0;
 let drumEnabled = true;
 
-// Pattern: 8 steps per bar (8th notes)
-// Kick on 1, 3 (steps 0, 4). Snare on 2, 4 (steps 2, 6). Hi-hat on all.
-const DRUM_PATTERN = [
-    [DRUM_KICK, DRUM_HIHAT],   // 1
-    [DRUM_HIHAT],               // &
-    [DRUM_SNARE, DRUM_HIHAT],  // 2
-    [DRUM_HIHAT],               // &
-    [DRUM_KICK, DRUM_HIHAT],   // 3
-    [DRUM_HIHAT],               // &
-    [DRUM_SNARE, DRUM_HIHAT],  // 4
-    [DRUM_HIHAT],               // &
-];
-
-function drumNoteOn(note) {
-    // Send on MIDI channel 10 (0x99), cable 2
-    move_midi_external_send([0x29, 0x99, note, 100]);
+// Build step-based pattern from song events: stepDrums[step] = [drumNote, ...]
+function buildDrumPattern() {
+    const pat = song.drumPatterns[0];
+    const stepDrums = [];
+    for (let s = 0; s < pat.steps; s++) {
+        stepDrums[s] = [];
+        for (const ev of pat.events) {
+            if (ev.step === s) stepDrums[s].push(ev.drum);
+        }
+    }
+    return { stepDrums: stepDrums, steps: pat.steps, bpm: pat.bpm };
 }
 
-function drumNoteOff(note) {
-    move_midi_external_send([0x28, 0x89, note, 0]);
+const DRUM_PAT = buildDrumPattern();
+const TICKS_PER_8TH = Math.round(TICKS_PER_SEC / (DRUM_PAT.bpm * 2 / 60));
+
+function drumNoteOn(note) {
+    move_midi_external_send([0x29, 0x99, note, 100]);
 }
 
 function tickDrum() {
@@ -383,12 +375,8 @@ function tickDrum() {
     drumTick++;
     if (drumTick >= TICKS_PER_8TH) {
         drumTick = 0;
-        // Note off previous step
-        const prevStep = (drumStep + 7) % 8;
-        for (const n of DRUM_PATTERN[prevStep]) drumNoteOff(n);
-        // Note on current step
-        for (const n of DRUM_PATTERN[drumStep]) drumNoteOn(n);
-        drumStep = (drumStep + 1) % 8;
+        for (const n of DRUM_PAT.stepDrums[drumStep]) drumNoteOn(n);
+        drumStep = (drumStep + 1) % DRUM_PAT.steps;
     }
 }
 
@@ -417,24 +405,12 @@ const LEVEL_CHORDS = 0;
 const LEVEL_PROGRESSION = 1;
 let gameLevel = LEVEL_CHORDS;
 
-// Practice: diatonic triads in C major, C through B
-const PRACTICE_CHORDS = [
-    { rootPc: 0,  type: "Maj" },
-    { rootPc: 2,  type: "Min" },
-    { rootPc: 4,  type: "Min" },
-    { rootPc: 5,  type: "Maj" },
-    { rootPc: 7,  type: "Maj" },
-    { rootPc: 9,  type: "Min" },
-    { rootPc: 11, type: "Dim" },
-];
+// Practice chords and progressions — loaded from song file
+const PRACTICE_CHORDS = song.practiceChords;
 let practiceIdx = 0;
 
-// I-IV-V chord progression
-const PROGRESSION_145 = [
-    { rootPc: 0, type: "Maj", numeral: "I" },
-    { rootPc: 5, type: "Maj", numeral: "IV" },
-    { rootPc: 7, type: "Maj", numeral: "V" },
-];
+const PROGRESSIONS = song.chordProgressions;
+let progressionIdx = 0;
 let progIdx = 0;
 let progRound = 0;
 
@@ -581,7 +557,7 @@ function startProgression() {
 }
 
 function loadProgressionChord() {
-    const ch = PROGRESSION_145[progIdx];
+    const ch = PROGRESSIONS[progressionIdx].chords[progIdx];
     const notes = makeChord(ch.rootPc, ch.type, 0);
     const padPositions = findChordPads(notes);
 
@@ -604,8 +580,8 @@ function loadProgressionChord() {
 
 function updateProgressionDisplay() {
     clear_screen();
-    const ch = PROGRESSION_145[progIdx];
-    print(2, 6, "I-IV-V", 1);
+    const ch = PROGRESSIONS[progressionIdx].chords[progIdx];
+    print(2, 6, PROGRESSIONS[progressionIdx].name, 1);
     print(2, 24, ch.numeral + ": " + NOTE_NAMES[ch.rootPc] + " " + ch.type, 1);
     print(2, 44, "Round " + (progRound + 1), 1);
 }
@@ -635,7 +611,7 @@ function switchGameLevel(level) {
     if (level === LEVEL_CHORDS) {
         enterScreen("Chord!", "Practice", 520, startPractice);
     } else if (level === LEVEL_PROGRESSION) {
-        enterScreen("I-IV-V!", "Practice", 520, startProgression);
+        enterScreen(PROGRESSIONS[progressionIdx].name + "!", "Practice", 520, startProgression);
     }
 }
 
@@ -786,12 +762,6 @@ globalThis.onMidiMessageInternal = function (data) {
         } else if (cc === 85) {
             // Play button — toggle drum beat
             drumEnabled = !drumEnabled;
-            if (!drumEnabled) {
-                // Send note-off for all drums
-                drumNoteOff(DRUM_KICK);
-                drumNoteOff(DRUM_SNARE);
-                drumNoteOff(DRUM_HIHAT);
-            }
             console.log("Drums: " + (drumEnabled ? "ON" : "OFF"));
         }
     }
@@ -877,10 +847,10 @@ globalThis.tick = function (deltaTime) {
                 }
             } else if (phase === PH_PROGRESSION) {
                 progIdx++;
-                if (progIdx >= PROGRESSION_145.length) {
+                if (progIdx >= PROGRESSIONS[progressionIdx].chords.length) {
                     progRound++;
                     progIdx = 0;
-                    enterScreen("Round " + progRound + "!", "I-IV-V", 400, function() {
+                    enterScreen("Round " + progRound + "!", PROGRESSIONS[progressionIdx].name, 400, function() {
                         phase = PH_PROGRESSION;
                         loadProgressionChord();
                     });
