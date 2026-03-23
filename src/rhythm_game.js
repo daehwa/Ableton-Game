@@ -232,14 +232,13 @@ function drumNoteOff(note) {
 // MIDI transport — sync Ableton playback with Move
 // ---------------------------------------------------------------------------
 
-// SysEx real-time: Start (FA), Stop (FC)
-// These are single-byte system real-time messages sent on cable 2
-function sendMidiStart() {
-    move_midi_external_send([0x2F, 0xFA, 0x00, 0x00]);
+// Trigger MP3 in Ableton drum rack (G8 = note 127, channel 10)
+function sendClipTrigger() {
+    move_midi_external_send([0x29, 0x99, 127, 127]);  // note on — starts MP3
 }
 
-function sendMidiStop() {
-    move_midi_external_send([0x2F, 0xFC, 0x00, 0x00]);
+function sendClipStop() {
+    move_midi_external_send([0x28, 0x89, 127, 0]);    // note off — stops MP3
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +269,7 @@ let globalTick = 0;
 let ticksPerStep = 0;
 let patternStartTick = 0;
 let lastStep = -1;
+let paused = false;
 
 // Pending events: { scheduledTick, drum, state: "pending"|"hit"|"missed" }
 let pendingEvents = [];
@@ -335,8 +335,7 @@ function startFreeDrum() {
 
 function startPractice() {
     phase = PH_PRACTICE;
-    sendMidiStop();
-    sendMidiStart();  // sync Ableton playback
+    sendClipTrigger();  // launch Ableton clip
     const pat = PATTERNS[patternIdx];
     // Slow down to 75% for practice
     // ticksPerStep = computeTicksPerStep(Math.round(pat.bpm * 0.75));
@@ -360,8 +359,7 @@ function startPractice() {
 
 function startPlay() {
     phase = PH_PLAY;
-    sendMidiStop();
-    sendMidiStart();  // sync Ableton playback
+    sendClipTrigger();  // launch Ableton clip
     const pat = PATTERNS[patternIdx];
     ticksPerStep = computeTicksPerStep(pat.bpm);
     patternStartTick = globalTick;
@@ -383,7 +381,7 @@ function startPlay() {
 
 function showResults() {
     phase = PH_SCREEN;
-    sendMidiStop();  // stop Ableton playback
+    sendClipStop();  // stop Ableton clip
     phaseTimer = 999999;  // stays until button press
     afterScreenFn = null;
     clearAllPads();
@@ -392,6 +390,8 @@ function showResults() {
 
 function switchMode(mode) {
     gameMode = mode;
+    paused = false;
+    sendClipStop();
     clearAllPads();
     clearButtons();
     updateTrackLEDs();
@@ -741,6 +741,9 @@ globalThis.onMidiMessageInternal = function (data) {
         const val = velocity;
         if (val === 0) return;
 
+        // Capture button — send clip trigger (for Ableton MIDI mapping)
+        if (cc === 52) { sendClipTrigger(); return; }
+
         // Track buttons — mode switch
         if (cc === 40) { switchMode(MODE_PRACTICE); return; }
         if (cc === 41) { switchMode(MODE_PLAY); return; }
@@ -758,9 +761,25 @@ globalThis.onMidiMessageInternal = function (data) {
             return;
         }
 
-        // Play button — restart current mode
+        // Play button — stop/restart
         if (cc === 85) {
-            switchMode(gameMode);
+            if (phase === PH_PRACTICE || phase === PH_PLAY) {
+                if (!paused) {
+                    // Stop
+                    paused = true;
+                    sendClipStop();
+                    setButtonColor(85, PAL_KICK);
+                    clear_screen();
+                    print(2, 24, "STOPPED", 1);
+                } else {
+                    // Restart from beginning
+                    paused = false;
+                    setButtonColor(85, PAL_OFF);
+                    switchMode(gameMode);
+                }
+            } else {
+                switchMode(gameMode);
+            }
             return;
         }
     }
@@ -829,6 +848,7 @@ globalThis.tick = function (deltaTime) {
 
     // Practice / Play mode
     if (phase === PH_PRACTICE || phase === PH_PLAY) {
+        if (paused) return;
         tickPattern();
         tickFlashes();
         updatePlayDisplay();

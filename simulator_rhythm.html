@@ -402,13 +402,13 @@ window.move_midi_external_send = function(data) {
     const status = data[1];
     const midi = data[2];
 
-    // MIDI Start (0xFA) — start MP3 playback
-    if (status === 0xFA) {
+    // Note 127 on channel 10 = MP3 trigger (matches drum rack G8 pad)
+    if (status === 0x99 && midi === 127 && data[3] > 0) {
         startMP3();
         return;
     }
-    // MIDI Stop (0xFC) — stop MP3 playback
-    if (status === 0xFC) {
+    // Note 127 off channel 10 = MP3 stop
+    if (status === 0x89 && midi === 127) {
         stopMP3();
         return;
     }
