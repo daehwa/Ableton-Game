@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Edu Game: Rhythm Game (web ver.)</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎶</text></svg>">
+<title>Edu Game: Rhythm Game</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🥁</text></svg>">
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -86,7 +86,7 @@ h1 { font-size: 16px; color: #555; margin-bottom: 12px; }
 </style>
 </head>
 <body>
-<h1>Edu Game: Rhythm Game (web ver.)</h1>
+<h1>🥁Edu Game: Rhythm Game🥁</h1>
 <canvas id="display" width="512" height="256"></canvas>
 <div id="buttons">
     <button id="btn-practice" class="track-btn active-practice">T1 Practice</button>
@@ -376,7 +376,15 @@ function startMP3() {
     gain.gain.value = 0.5;
     mp3Source.connect(gain);
     gain.connect(audioCtx.destination);
-    mp3Source.loop = true;
+    mp3Source.loop = false;
+    mp3Source.onended = function() {
+        mp3Playing = false;
+        mp3Source = null;
+        // Trigger Play button (CC 85) to stop the game
+        if (globalThis.onMidiMessageInternal) {
+            globalThis.onMidiMessageInternal([0xB0, 85, 127]);
+        }
+    };
     mp3Source.start();
     mp3Playing = true;
     mp3StartTime = audioCtx.currentTime;

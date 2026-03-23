@@ -765,12 +765,10 @@ globalThis.onMidiMessageInternal = function (data) {
         if (cc === 85) {
             if (phase === PH_PRACTICE || phase === PH_PLAY) {
                 if (!paused) {
-                    // Stop
+                    // Stop — show results
                     paused = true;
                     sendClipStop();
-                    setButtonColor(85, PAL_KICK);
-                    clear_screen();
-                    print(2, 24, "STOPPED", 1);
+                    showResults();
                 } else {
                     // Restart from beginning
                     paused = false;
