@@ -492,21 +492,44 @@ document.getElementById('btn-up').addEventListener('click', function() { sendCC(
 document.getElementById('btn-down').addEventListener('click', function() { sendCC(54); });
 document.getElementById('btn-restart').addEventListener('click', function() { sendCC(85); });
 
-// --- Wait for MP3 to load, then init ---
-function waitForMP3ThenStart() {
+// --- Wait for MP3 to load, then require click to start ---
+function showLoading() {
+    dCtx.fillStyle = '#000';
+    dCtx.fillRect(0, 0, 512, 256);
+    dCtx.fillStyle = '#fff';
+    dCtx.font = '44px monospace';
+    dCtx.fillText('Loading audio...', 40, 140);
+}
+
+function showClickToStart() {
+    dCtx.fillStyle = '#000';
+    dCtx.fillRect(0, 0, 512, 256);
+    dCtx.fillStyle = '#fff';
+    dCtx.font = '44px monospace';
+    dCtx.fillText('Click to Start', 60, 140);
+}
+
+function waitForMP3() {
     if (!mp3Buffer) {
-        dCtx.fillStyle = '#000';
-        dCtx.fillRect(0, 0, 512, 256);
-        dCtx.fillStyle = '#fff';
-        dCtx.font = '44px monospace';
-        dCtx.fillText('Loading audio...', 40, 140);
-        requestAnimationFrame(waitForMP3ThenStart);
+        showLoading();
+        requestAnimationFrame(waitForMP3);
         return;
     }
-    globalThis.init();
-    requestAnimationFrame(animLoop);
+    showClickToStart();
+    // Wait for user click/key to unlock audio, then start game
+    function startGame() {
+        ensureAudio();
+        audioCtx.resume().then(function() {
+            globalThis.init();
+            requestAnimationFrame(animLoop);
+        });
+        document.removeEventListener('click', startGame);
+        document.removeEventListener('keydown', startGame);
+    }
+    document.addEventListener('click', startGame);
+    document.addEventListener('keydown', startGame);
 }
-waitForMP3ThenStart();
+waitForMP3();
 
 // --- Tick loop matching Move's ~344 Hz (44100/128) ---
 const MOVE_TICK_MS = 1000 / (44100 / 128);
