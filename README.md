@@ -2,6 +2,11 @@
 
 This is the part of (in progress) final project of Design Educational Game (05418) in Carnegie Mellon University. 
 
+
+https://github.com/user-attachments/assets/a13c414a-4411-4ea1-8254-250fca8eda22
+
+
+
 # Demo
 
 We can approximate our core game mechanism on keyboard based interaction without Ableton Move. Try our demo in this [link](http://daehwakim.com/edu-game/rhythm). (Still in progress)
