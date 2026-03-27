@@ -3,7 +3,10 @@
 This is the part of (in progress) final project of Design Educational Game (05418) in Carnegie Mellon University. 
 
 
-https://github.com/user-attachments/assets/a13c414a-4411-4ea1-8254-250fca8eda22
+
+https://github.com/user-attachments/assets/0a27df18-4690-46d8-b735-fcc685f43f05
+
+
 
 
 
